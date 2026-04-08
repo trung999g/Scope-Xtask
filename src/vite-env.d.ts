@@ -5,18 +5,13 @@ interface ImportMetaEnv {
   /** Build: vite.config define + VERCEL_GIT_COMMIT_SHA trên Vercel */
   readonly VITE_APP_GIT_SHA: string
   readonly VITE_API_BASE_URL?: string
-  readonly VITE_GEMINI_API_KEY?: string
   readonly VITE_OPENAI_API_KEY?: string
-  /**
-   * Key LLM chung (OpenAI hoặc Gemini — phải khớp model đang chọn). Dùng khi không set VITE_OPENAI_API_KEY / VITE_GEMINI_API_KEY.
-   */
+  /** Key OpenAI chung khi không đặt VITE_OPENAI_API_KEY. */
   readonly VITE_AI_API_KEY?: string
   readonly VITE_AI_MODEL?: string
   /** Khoảng nghỉ giữa mỗi batch chấm AI (ms), giảm 429 RPM */
   readonly VITE_AI_CHUNK_GAP_MS?: string
-  /** Model dự phòng khi 429/503 (mặc định code: gemini-2.5-flash) */
-  readonly VITE_AI_FALLBACK_MODEL?: string
-  /** Nghỉ tối thiểu giữa mọi request Gemini (ms). Ưu tiên hơn VITE_AI_CHUNK_GAP_MS nếu set. */
+  /** Nghỉ tối thiểu giữa mọi request OpenAI (ms). Ưu tiên hơn VITE_AI_CHUNK_GAP_MS nếu set. */
   readonly VITE_AI_GLOBAL_GAP_MS?: string
   /**
    * Chấm AI ngay sau khi tải sheet. `false`/`0` = tắt (khuyến nghị tránh 429), chỉ chấm khi bấm nút ở Kết quả.

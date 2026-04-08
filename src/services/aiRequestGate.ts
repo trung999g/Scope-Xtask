@@ -1,6 +1,6 @@
 /**
- * Hàng đợi tuần tự + nghỉ tối thiểu giữa mọi lệnh generateContent,
- * tránh burst 429 trên free tier.
+ * Hàng đợi tuần tự + nghỉ tối thiểu giữa mọi request OpenAI,
+ * tránh burst 429.
  */
 
 function sleep(ms: number): Promise<void> {

@@ -1,12 +1,9 @@
 import type { AiPromptConfig } from '@/types/aiPrompts'
 
 /**
- * Mặc định: GPT-4o (OpenAI). Đổi model trong tab Prompt AI — model gemini-* dùng Google AI Studio.
+ * Chấm điểm chỉ qua OpenAI Chat Completions — mặc định gpt-4o.
  */
 export const DEFAULT_AI_MODEL = 'gpt-4o'
-
-/** Model dự phòng khi primary trả 429/503 — bộ quota riêng, reasoning mạnh hơn Lite một chút. */
-export const DEFAULT_AI_FALLBACK_MODEL = 'gemini-2.5-flash'
 
 export const DEFAULT_AI_PROMPTS: AiPromptConfig = {
   roleAndMission: `Bạn là Trưởng nhóm Frontend (FE) đánh giá năng suất từ phiếu Xtask (CSV).

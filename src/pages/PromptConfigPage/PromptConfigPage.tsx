@@ -7,9 +7,8 @@ import type { AiPromptConfig } from '@/types/aiPrompts'
 import {
     describeBuiltInLlmKeySource,
     hasBuiltInLlmKey,
-    isOpenAiModel,
 } from '@/utils/llmKey'
-import { Info, RotateCcw, Save } from 'lucide-react'
+import { ExternalLink, Info, KeyRound, RotateCcw, Save } from 'lucide-react'
 import React, { useState } from 'react'
 
 const FIELD_META: { key: keyof AiPromptConfig; label: string; hint: string }[] =
@@ -58,7 +57,7 @@ export const PromptConfigPage: React.FC = () => {
   const [draft, setDraft] = useState<AiPromptConfig>(aiPrompts)
   const [modelDraft, setModelDraft] = useState(aiModel)
   const [keyDraft, setKeyDraft] = useState(() =>
-    hasBuiltInLlmKey(aiModel) ? '' : apiKey,
+    hasBuiltInLlmKey() ? '' : apiKey,
   )
   const [savedAt, setSavedAt] = useState<string | null>(null)
 
@@ -69,7 +68,7 @@ export const PromptConfigPage: React.FC = () => {
   const handleSave = () => {
     setAiPrompts(draft)
     setAiModel(modelDraft.trim() || DEFAULT_AI_MODEL)
-    if (!hasBuiltInLlmKey(modelDraft.trim() || DEFAULT_AI_MODEL)) {
+    if (!hasBuiltInLlmKey()) {
       setApiKey(keyDraft.trim())
     }
     setSavedAt(new Date().toLocaleTimeString('vi-VN'))
@@ -89,10 +88,11 @@ export const PromptConfigPage: React.FC = () => {
         <div className="rounded-2xl border border-amber-200 bg-amber-50/80 p-4 text-sm text-amber-950">
           <div className="flex gap-2 font-bold">
             <Info className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>Về NotebookLM và key miễn phí</span>
+            <span>OpenAI (ChatGPT API)</span>
           </div>
           <p className="mt-2 leading-relaxed">
-            Mặc định app dùng <strong>OpenAI</strong> (<code className="rounded bg-white/80 px-1">gpt-4o</code>) — tạo key tại{' '}
+            Chấm điểm <strong>chỉ</strong> gọi <code className="rounded bg-white/80 px-1">https://api.openai.com/v1/chat/completions</code>{' '}
+            — không dùng Google Gemini. Model mặc định <code className="rounded bg-white/80 px-1">gpt-4o</code>. Tạo key tại{' '}
             <a
               href="https://platform.openai.com/api-keys"
               target="_blank"
@@ -104,40 +104,72 @@ export const PromptConfigPage: React.FC = () => {
             , hoặc cấu hình{' '}
             <code className="rounded bg-white/80 px-1">VITE_OPENAI_API_KEY</code> /{' '}
             <code className="rounded bg-white/80 px-1">VITE_AI_API_KEY</code> khi deploy.
-            Model <code className="rounded bg-white/80 px-1">gemini-*</code> dùng{' '}
-            <a
-              href="https://aistudio.google.com/apikey"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="font-bold underline decoration-amber-600 underline-offset-2"
-            >
-              Google AI Studio
-            </a>
-            . Nếu <strong>429</strong>: tăng <code className="rounded bg-white/80 px-1">VITE_AI_GLOBAL_GAP_MS</code> hoặc kiểm tra billing nhà cung cấp.
+            Nếu <strong>429</strong>: tăng <code className="rounded bg-white/80 px-1">VITE_AI_GLOBAL_GAP_MS</code> hoặc kiểm tra billing OpenAI.
           </p>
         </div>
       </section>
+
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm space-y-4">
+        <div className="flex items-center gap-2 text-slate-900">
+          <KeyRound className="h-5 w-5 text-indigo-600 shrink-0" />
+          <h3 className="text-sm font-black uppercase tracking-widest text-slate-600">
+            Lấy API key OpenAI
+          </h3>
+        </div>
+        <p className="text-sm text-slate-600 leading-relaxed">
+          Đăng nhập OpenAI → mục API keys → <strong>Create new secret key</strong>. Key có dạng{' '}
+          <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">sk-…</code>
+        </p>
+        <div className="flex flex-col sm:flex-row flex-wrap gap-3">
+          <a
+            href="https://platform.openai.com/api-keys"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-3 text-sm font-bold text-white shadow-md hover:bg-indigo-700 transition-colors"
+          >
+            <ExternalLink className="h-4 w-4 shrink-0" />
+            Mở trang API keys
+          </a>
+          <a
+            href="https://platform.openai.com/signup"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-2 rounded-xl border-2 border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold text-slate-800 hover:bg-slate-100 transition-colors"
+          >
+            <ExternalLink className="h-4 w-4 shrink-0" />
+            Đăng ký tài khoản OpenAI
+          </a>
+          <a
+            href="https://platform.openai.com/settings/organization/billing/overview"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
+          >
+            <ExternalLink className="h-4 w-4 shrink-0" />
+            Thanh toán và gói dùng
+          </a>
+        </div>
+        <p className="text-xs text-slate-400 font-mono break-all">
+          https://platform.openai.com/api-keys
+        </p>
+      </div>
 
       <div className="glass-card space-y-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h3 className="text-sm font-black uppercase tracking-widest text-slate-400">
           Kết nối
         </h3>
-        {hasBuiltInLlmKey(modelDraft.trim() || DEFAULT_AI_MODEL) ? (
+        {hasBuiltInLlmKey() ? (
           <p className="rounded-xl border border-emerald-200 bg-emerald-50/90 px-4 py-3 text-xs font-medium text-emerald-900 leading-relaxed">
             Đang lấy key từ biến môi trường build (
             <code className="rounded bg-white/80 px-1">
-              {describeBuiltInLlmKeySource(
-                modelDraft.trim() || DEFAULT_AI_MODEL,
-              ) ?? 'env'}
+              {describeBuiltInLlmKeySource() ?? 'env'}
             </code>
-            ) — không cần dán key vào ô dưới. Có thể dùng{' '}
-            <code className="rounded bg-white/80 px-1">VITE_AI_API_KEY</code>{' '}
-            làm key chung nếu không đặt tên riêng theo provider.
+            ) — không cần dán key vào ô dưới.
           </p>
         ) : null}
         <label className="block space-y-1">
           <span className="text-[10px] font-black uppercase text-slate-400">
-            API key — OpenAI (sk-…) hoặc Gemini (AIza…), theo Model ID đã chọn
+            API key OpenAI (sk-…)
           </span>
           <input
             type="password"
@@ -145,13 +177,11 @@ export const PromptConfigPage: React.FC = () => {
             value={keyDraft}
             onChange={(e) => setKeyDraft(e.target.value)}
             placeholder={
-              hasBuiltInLlmKey(modelDraft.trim() || DEFAULT_AI_MODEL)
+              hasBuiltInLlmKey()
                 ? 'Bỏ trống — đã có key dự án'
-                : isOpenAiModel(modelDraft.trim() || DEFAULT_AI_MODEL)
-                  ? 'sk-...'
-                  : 'AIza...'
+                : 'sk-...'
             }
-            disabled={hasBuiltInLlmKey(modelDraft.trim() || DEFAULT_AI_MODEL)}
+            disabled={hasBuiltInLlmKey()}
             className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
           />
         </label>
@@ -165,10 +195,10 @@ export const PromptConfigPage: React.FC = () => {
             className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-slate-300"
           />
           <p className="text-xs text-slate-500">
-            Mặc định: <code className="text-[10px]">{DEFAULT_AI_MODEL}</code> (OpenAI). Ví dụ Gemini:{' '}
-            <code className="text-[10px]">gemini-2.5-flash-lite</code>. Nếu 429: tăng{' '}
-            <code className="text-[10px]">VITE_AI_GLOBAL_GAP_MS</code> trong{' '}
-            <code className="text-[10px]">.env</code>.
+            Mặc định: <code className="text-[10px]">{DEFAULT_AI_MODEL}</code>. Ví dụ:{' '}
+            <code className="text-[10px]">gpt-4o-mini</code>. Model <code className="text-[10px]">gemini-*</code>{' '}
+            trong ô này sẽ được <strong>bỏ qua</strong> và dùng <code className="text-[10px]">{DEFAULT_AI_MODEL}</code>. Nếu 429: tăng{' '}
+            <code className="text-[10px]">VITE_AI_GLOBAL_GAP_MS</code>.
           </p>
         </label>
       </div>

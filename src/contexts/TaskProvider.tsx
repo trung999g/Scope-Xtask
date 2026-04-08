@@ -7,7 +7,11 @@ import { AIService } from '@/services/AIService'
 import { GoogleSheetService } from '@/services/GoogleSheetService'
 import type { Employee, Task } from '@/types'
 import type { AiPromptConfig } from '@/types/aiPrompts'
-import { hasBuiltInLlmKey, resolveLlmApiKey } from '@/utils/llmKey'
+import {
+  coerceOpenAiModelId,
+  hasBuiltInLlmKey,
+  resolveLlmApiKey,
+} from '@/utils/llmKey'
 import {
   useCallback,
   useEffect,
@@ -32,9 +36,12 @@ function readStoredUserApiKey(): string {
 function readInitialModel(): string {
   try {
     const stored = localStorage.getItem(LS_MODEL)
-    return (
-      stored || import.meta.env.VITE_AI_MODEL || DEFAULT_AI_MODEL
-    )
+    const raw = (
+      stored ||
+      import.meta.env.VITE_AI_MODEL ||
+      DEFAULT_AI_MODEL
+    ).trim()
+    return coerceOpenAiModelId(raw || DEFAULT_AI_MODEL)
   } catch {
     return DEFAULT_AI_MODEL
   }
@@ -70,9 +77,10 @@ export function TaskProvider({ children }: { children: ReactNode }) {
   }, [apiKey, aiModel, aiPrompts])
 
   const setAiModel = useCallback((m: string) => {
-    setAiModelState(m)
+    const coerced = coerceOpenAiModelId(m.trim() || DEFAULT_AI_MODEL)
+    setAiModelState(coerced)
     try {
-      localStorage.setItem(LS_MODEL, m)
+      localStorage.setItem(LS_MODEL, coerced)
     } catch {
       /* ignore */
     }
@@ -83,7 +91,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (hasBuiltInLlmKey(aiModel)) return
+    if (hasBuiltInLlmKey()) return
     if (apiKey) {
       try {
         localStorage.setItem(LS_API, apiKey)
@@ -91,7 +99,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
         /* ignore */
       }
     }
-  }, [apiKey, aiModel])
+  }, [apiKey])
 
   const currentEmployee =
     employees.find((e) => e.id === selectedEmployeeId) ?? null
@@ -129,7 +137,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
 
       const { apiKey: keyFromState, aiModel: model, aiPrompts: prompts } =
         aiConfigRef.current
-      const key = resolveLlmApiKey(keyFromState, model)
+        const key = resolveLlmApiKey(keyFromState)
       if (!autoScore || !key || filteredTasks.length === 0) return
 
       try {

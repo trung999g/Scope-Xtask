@@ -1,7 +1,4 @@
-import {
-    DEFAULT_AI_FALLBACK_MODEL,
-    DEFAULT_AI_MODEL,
-} from '@/constants/aiPromptDefaults'
+import { DEFAULT_AI_MODEL } from '@/constants/aiPromptDefaults'
 import {
     enqueueAiRequest,
     scoringQueueGapMs,
@@ -10,12 +7,11 @@ import type { SheetAiAuditRow } from '@/services/GoogleSheetService'
 import { GoogleSheetService } from '@/services/GoogleSheetService'
 import type { Task, TaskType } from '@/types'
 import type { AiPromptConfig } from '@/types/aiPrompts'
-import { isOpenAiModel } from '@/utils/llmKey'
+import { coerceOpenAiModelId } from '@/utils/llmKey'
 import {
     auditPayloadId,
     normalizeXtaskId,
 } from '@/utils/taskIds'
-import type { GoogleGenerativeAI } from '@google/generative-ai'
 
 const TASK_TYPES: TaskType[] = [
   'feature',
@@ -137,48 +133,6 @@ function retryDelayMs(err: unknown, attempt: number): number {
     return Math.min(240_000, base + jitter)
   }
   return Math.min(240_000, 9000 * (attempt + 1) + jitter)
-}
-
-async function generateContentWithRetry(
-  model: {
-    generateContent: (p: string) => Promise<{ response: { text: () => string } }>
-  },
-  userMessage: string,
-): Promise<{ response: { text: () => string } }> {
-  const maxAttempts = 12
-  let lastErr: unknown
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      return await enqueueAiRequest(
-        () => model.generateContent(userMessage),
-        scoringQueueGapMs(),
-      )
-    } catch (e) {
-      lastErr = e
-      if (!isRetriableApiError(e) || attempt === maxAttempts - 1) {
-        if (isRetriableApiError(e)) {
-          const base = e instanceof Error ? e.message : String(e)
-          let hint: string
-          if (isLikelyOverload503(e)) {
-            hint =
-              'Máy chủ Gemini đang quá tải hoặc tạm thời không phản hồi (503/502). Đợi vài phút rồi thử lại; hoặc đổi model ở tab Prompt AI (vd. gemini-2.0-flash-lite, gemini-2.5-flash). Xem: https://ai.google.dev/gemini-api/docs/troubleshooting'
-          } else if (isLikelyQuota429(e)) {
-            hint =
-              'Hết quota / giới hạn gọi API (429). Bật VITE_AI_AUTO_SCORE=false, tăng VITE_AI_GLOBAL_GAP_MS, đổi model, hoặc bật billing. https://ai.google.dev/gemini-api/docs/rate-limits'
-          } else {
-            hint =
-              'Lỗi mạng tạm thời — thử lại sau hoặc đổi model trong tab Prompt AI.'
-          }
-          throw new Error(`${base}\n\n${hint}`)
-        }
-        throw e
-      }
-      await sleep(retryDelayMs(e, attempt))
-    }
-  }
-  throw lastErr instanceof Error
-    ? lastErr
-    : new Error('generateContentWithRetry: không thành công')
 }
 
 const OPENAI_USER_JSON_HINT = `
@@ -416,8 +370,8 @@ function mergeAiOntoTask(task: Task, entry: AiScoreEntry | undefined): Task {
 
 export const AIService = {
   /**
-   * Chấm điểm & phân loại: OpenAI (gpt-*) hoặc Gemini theo model.
-   * Payload AI lấy từ CSV qua GoogleSheetService khi truyền `sheetCsvText` (khuyến nghị).
+   * Chấm điểm & phân loại qua OpenAI Chat Completions (ChatGPT API).
+   * Payload từ CSV qua GoogleSheetService khi có `sheetCsvText` (khuyến nghị).
    */
   async scoreTasksWithAI(
     tasks: Task[],
@@ -431,38 +385,8 @@ export const AIService = {
   ): Promise<Task[]> {
     if (!apiKey || tasks.length === 0) return tasks
 
-    const resolvedModel = model.trim() || DEFAULT_AI_MODEL
-    const useOpenAi = isOpenAiModel(resolvedModel)
+    const resolvedModel = coerceOpenAiModelId(model.trim() || DEFAULT_AI_MODEL)
     const systemInstruction = buildSystemInstruction(prompts)
-
-    const genConfig = {
-      generationConfig: {
-        responseMimeType: 'application/json' as const,
-        maxOutputTokens: 16_384,
-      },
-    }
-
-    let generativeModel: {
-      generateContent: (p: string) => Promise<{ response: { text: () => string } }>
-    } | null = null
-    let genAI: GoogleGenerativeAI | null = null
-    let primaryId = ''
-    let fallbackId = ''
-
-    if (!useOpenAi) {
-      const { GoogleGenerativeAI } = await import('@google/generative-ai')
-      genAI = new GoogleGenerativeAI(apiKey)
-      primaryId = resolvedModel
-      generativeModel = genAI.getGenerativeModel({
-        model: primaryId,
-        systemInstruction,
-        ...genConfig,
-      })
-      fallbackId = (
-        (import.meta.env.VITE_AI_FALLBACK_MODEL as string | undefined)?.trim() ||
-        DEFAULT_AI_FALLBACK_MODEL
-      ).trim()
-    }
 
     const byId = new Map<string, AiScoreEntry>()
 
@@ -486,34 +410,13 @@ export const AIService = {
     const runOneChunk = async (
       userMessage: string,
     ): Promise<{ response: { text: () => string } }> => {
-      if (useOpenAi) {
-        const text = await openAiChatWithRetry(
-          apiKey,
-          resolvedModel,
-          systemInstruction,
-          userMessage,
-        )
-        return { response: { text: () => text } }
-      }
-      try {
-        return await generateContentWithRetry(generativeModel!, userMessage)
-      } catch (e) {
-        if (
-          genAI &&
-          fallbackId &&
-          fallbackId !== primaryId &&
-          (isLikelyOverload503(e) || isLikelyQuota429(e))
-        ) {
-          await sleep(2000 + Math.random() * 2000)
-          const alt = genAI.getGenerativeModel({
-            model: fallbackId,
-            systemInstruction,
-            ...genConfig,
-          })
-          return await generateContentWithRetry(alt, userMessage)
-        }
-        throw e
-      }
+      const text = await openAiChatWithRetry(
+        apiKey,
+        resolvedModel,
+        systemInstruction,
+        userMessage,
+      )
+      return { response: { text: () => text } }
     }
 
     const batches = buildPayloadBatches(payloads)
