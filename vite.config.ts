@@ -12,7 +12,8 @@ const appGitSha =
 export default defineConfig({
   plugins: [react()],
   define: {
-    __APP_GIT_SHA__: JSON.stringify(appGitSha),
+    /** Dùng import.meta.env — Vite thay thế ổn định hơn biến global __APP_* */
+    "import.meta.env.VITE_APP_GIT_SHA": JSON.stringify(appGitSha),
   },
   resolve: {
     alias: {

@@ -114,7 +114,7 @@ function App() {
             <p className="text-slate-300 text-[10px] font-bold uppercase text-center md:text-right">
               Build with ♥ for TGDD Web Team
               <span className="block mt-1 font-mono text-slate-500 normal-case tracking-normal">
-                Git: {__APP_GIT_SHA__}
+                Git: {import.meta.env.VITE_APP_GIT_SHA}
               </span>
             </p>
           </div>

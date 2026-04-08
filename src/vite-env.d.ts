@@ -2,6 +2,8 @@
 /* eslint-disable @typescript-eslint/no-unused-vars -- bổ sung kiểu env cho import.meta */
 
 interface ImportMetaEnv {
+  /** Build: vite.config define + VERCEL_GIT_COMMIT_SHA trên Vercel */
+  readonly VITE_APP_GIT_SHA: string
   readonly VITE_API_BASE_URL?: string
   readonly VITE_GEMINI_API_KEY?: string
   readonly VITE_AI_MODEL?: string
@@ -18,9 +20,6 @@ interface ImportMetaEnv {
 }
 
 declare global {
-  /** Inject từ vite.config (Vercel: VERCEL_GIT_COMMIT_SHA). */
-  const __APP_GIT_SHA__: string
-
   interface Window {
     setActiveTab?: (
       tab: 'input' | 'output' | 'rules' | 'guide' | 'prompts',
