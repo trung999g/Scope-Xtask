@@ -17,12 +17,15 @@ interface ImportMetaEnv {
   readonly VITE_AI_AUTO_SCORE?: string
 }
 
-export { }
-
 declare global {
+  /** Inject từ vite.config (Vercel: VERCEL_GIT_COMMIT_SHA). */
+  const __APP_GIT_SHA__: string
+
   interface Window {
     setActiveTab?: (
       tab: 'input' | 'output' | 'rules' | 'guide' | 'prompts',
     ) => void
   }
 }
+
+export {}

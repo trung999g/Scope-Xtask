@@ -111,7 +111,12 @@ function App() {
                <div className="w-8 h-8 bg-slate-900 rounded-lg flex items-center justify-center text-white font-black text-xs">A.G</div>
                <p className="text-slate-400 text-xs font-bold uppercase tracking-widest">Ants Gravity • Task Scoring System</p>
             </div>
-            <p className="text-slate-300 text-[10px] font-bold uppercase">Build with ♥ for TGDD Web Team</p>
+            <p className="text-slate-300 text-[10px] font-bold uppercase text-center md:text-right">
+              Build with ♥ for TGDD Web Team
+              <span className="block mt-1 font-mono text-slate-500 normal-case tracking-normal">
+                Git: {__APP_GIT_SHA__}
+              </span>
+            </p>
           </div>
         </footer>
       </div>
