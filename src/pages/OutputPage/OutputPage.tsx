@@ -194,16 +194,22 @@ export const OutputPage: React.FC = () => {
                     BÁO CÁO CHI TIẾT: {currentEmployee?.name} • {employeeTasks.length} TASK
                   </h4>
                   
-                  {(apiKey || import.meta.env.VITE_GEMINI_API_KEY) && (
-                    <button 
-                      onClick={handleAiReview}
-                      disabled={isAiLoading}
-                      className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-indigo-100 disabled:opacity-50"
-                    >
-                      {isAiLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                      {isAiLoading ? 'AI đang chấm điểm...' : 'Chấm AI (NV hiện tại)'}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={handleAiReview}
+                    disabled={isAiLoading || employeeTasks.length === 0}
+                    title={
+                      employeeTasks.length === 0
+                        ? 'Chưa có task cho nhân viên này'
+                        : !(apiKey || import.meta.env.VITE_GEMINI_API_KEY)
+                          ? 'Nhập API key tại tab Prompt AI (Google AI Studio)'
+                          : undefined
+                    }
+                    className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-indigo-100 disabled:opacity-50"
+                  >
+                    {isAiLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                    {isAiLoading ? 'AI đang chấm điểm...' : 'Chấm AI (NV hiện tại)'}
+                  </button>
                 </div>
                 
                 <div className="overflow-x-auto overflow-y-auto max-h-[600px] custom-scrollbar">
