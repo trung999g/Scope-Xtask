@@ -74,27 +74,14 @@ export const OutputPage: React.FC = () => {
     if (employeeTasks.length === 0) return;
 
     setIsAiLoading(true);
-    const AI_SCORE_TIMEOUT_MS = 180_000
     try {
-      const scoredSubset = await Promise.race([
-        AIService.scoreTasksWithAI(
-          employeeTasks,
-          key,
-          aiModel,
-          aiPrompts,
-        ),
-        new Promise<never>((_, reject) => {
-          setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `Chấm AI quá lâu (>${AI_SCORE_TIMEOUT_MS / 1000}s) trong một request duy nhất — thử giảm danh sách task (chọn NV có ít phiếu), đổi model, hoặc kiểm tra mạng.`,
-                ),
-              ),
-            AI_SCORE_TIMEOUT_MS,
-          )
-        }),
-      ])
+      /** Nhiều lô + retry + gap — không cắt timeout cứng (tránh lỗi giả khi NV có >50 phiếu). */
+      const scoredSubset = await AIService.scoreTasksWithAI(
+        employeeTasks,
+        key,
+        aiModel,
+        aiPrompts,
+      )
       // Ghép theo main+sub để khớp sheet; chỉ subTaskId dễ trùng hoặc lệch với id AI.
       const byRow = new Map<string, Task>(
         scoredSubset.map((t) => [stableTaskRowKey(t), t]),

@@ -17,6 +17,8 @@ interface ImportMetaEnv {
    * Chấm AI ngay sau khi tải sheet. `false`/`0` = tắt (khuyến nghị tránh 429), chỉ chấm khi bấm nút ở Kết quả.
    */
   readonly VITE_AI_AUTO_SCORE?: string
+  /** Số task mỗi lần gọi chấm AI (mặc định 6). Giảm nếu 429/timeout; tăng nhẹ nếu ít phiếu. */
+  readonly VITE_AI_SCORE_CHUNK_SIZE?: string
 }
 
 declare global {

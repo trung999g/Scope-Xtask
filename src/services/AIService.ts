@@ -19,6 +19,14 @@ const TASK_TYPES: TaskType[] = [
   'leave',
 ]
 
+/** Số task / mỗi lần gọi Gemini — gom hết 1 request dễ >180s khi NV có nhiều phiếu. */
+function scoreChunkSize(): number {
+  const raw = import.meta.env.VITE_AI_SCORE_CHUNK_SIZE
+  const n = raw !== undefined && raw !== '' ? parseInt(raw, 10) : 6
+  if (Number.isNaN(n) || n < 1) return 6
+  return Math.min(40, n)
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -180,7 +188,7 @@ function applyLatePenalty(score: number, lateDays: number): number {
   return Math.max(0, Math.min(4, score - d))
 }
 
-/** Rubric trong systemInstruction — chỉ một request generateContent cho toàn bộ payload. */
+/** Rubric trong systemInstruction — tái sử dụng mọi lần gọi API (nhiều lô nhỏ). */
 function buildSystemInstruction(prompts: AiPromptConfig): string {
   return `${prompts.roleAndMission}
 
@@ -203,9 +211,11 @@ ${prompts.jsonOutputContract}`
 function buildUserPayloadMessage(
   payload: ReturnType<typeof toAuditPayload>,
 ): string {
-  return `Trả về ĐÚNG một mảng JSON hợp lệ (application/json, không markdown) trong MỘT lần duy nhất. Mọi phần tử trong PAYLOAD bên dưới phải có đúng một phần tử tương ứng trong mảng; trường "id" khớp từng phần tử.
+  return `Trả về ĐÚNG một mảng JSON hợp lệ (application/json, không markdown).
 
-PAYLOAD:
+Với MỖI phần tử trong PAYLOAD bên dưới phải có ĐÚNG một object tương ứng trong mảng; trường "id" khớp từng phần tử (không thêm/bớt id).
+
+PAYLOAD (lô hiện tại):
 ${JSON.stringify(payload)}`
 }
 
@@ -292,8 +302,8 @@ export const AIService = {
     const genConfig = {
       generationConfig: {
         responseMimeType: 'application/json' as const,
-        /** Một response cho cả danh sách task — tránh JSON bị cắt giữa chừng. */
-        maxOutputTokens: 8192,
+        /** Đủ cho một lô (vài chục task) có aiComment. */
+        maxOutputTokens: 12_288,
       },
     }
     const systemInstruction = buildSystemInstruction(prompts)
@@ -337,22 +347,28 @@ export const AIService = {
       }
     }
 
+    const chunkSize = scoreChunkSize()
     if (payloads.length > 0) {
-      const userMessage = buildUserPayloadMessage(payloads)
-      const result = await runOneChunk(userMessage)
-      const responseText = result.response.text()
-      let parsed: unknown[]
-      try {
-        parsed = parseResponseToArray(responseText)
-      } catch {
-        throw new Error('AI trả JSON không hợp lệ. Kiểm tra model hoặc rút gọn prompt.')
-      }
-      for (const row of parsed) {
-        const e = row as AiScoreEntry
-        if (e?.id == null || e.id === '') continue
-        const idNorm = normalizeXtaskId(String(e.id))
-        if (!idNorm) continue
-        byId.set(idNorm, { ...e, id: idNorm })
+      for (let i = 0; i < payloads.length; i += chunkSize) {
+        const slice = payloads.slice(i, i + chunkSize)
+        const userMessage = buildUserPayloadMessage(slice)
+        const result = await runOneChunk(userMessage)
+        const responseText = result.response.text()
+        let parsed: unknown[]
+        try {
+          parsed = parseResponseToArray(responseText)
+        } catch {
+          throw new Error(
+            `AI trả JSON không hợp lệ (lô ${Math.floor(i / chunkSize) + 1}). Thử giảm VITE_AI_SCORE_CHUNK_SIZE hoặc đổi model.`,
+          )
+        }
+        for (const row of parsed) {
+          const e = row as AiScoreEntry
+          if (e?.id == null || e.id === '') continue
+          const idNorm = normalizeXtaskId(String(e.id))
+          if (!idNorm) continue
+          byId.set(idNorm, { ...e, id: idNorm })
+        }
       }
     }
 
