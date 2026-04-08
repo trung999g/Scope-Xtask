@@ -25,9 +25,23 @@ export function globalAiGapMs(): number {
 
 let chain: Promise<void> = Promise.resolve()
 
-export function enqueueAiRequest<T>(task: () => Promise<T>): Promise<T> {
-  const gap = globalAiGapMs()
-  const run = chain.then(() => sleep(gap)).then(() => task())
+/**
+ * Khoảng nghỉ giữa các lần chấm điểm (nhiều lô).
+ * Mặc định = globalAiGapMs(); có thể giảm bằng VITE_AI_SCORE_GAP_MS (cẩn thận 429).
+ */
+export function scoringQueueGapMs(): number {
+  const raw = import.meta.env.VITE_AI_SCORE_GAP_MS
+  if (raw !== undefined && raw !== '') {
+    return parseMs(raw, globalAiGapMs())
+  }
+  return globalAiGapMs()
+}
+
+export function enqueueAiRequest<T>(
+  task: () => Promise<T>,
+  gapMs: number = globalAiGapMs(),
+): Promise<T> {
+  const run = chain.then(() => sleep(gapMs)).then(() => task())
   chain = run.then(
     () => undefined,
     () => undefined,

@@ -2,7 +2,10 @@ import {
     DEFAULT_AI_FALLBACK_MODEL,
     DEFAULT_AI_MODEL,
 } from '@/constants/aiPromptDefaults'
-import { enqueueAiRequest } from '@/services/aiRequestGate'
+import {
+    enqueueAiRequest,
+    scoringQueueGapMs,
+} from '@/services/aiRequestGate'
 import type { Task, TaskType } from '@/types'
 import type { AiPromptConfig } from '@/types/aiPrompts'
 import {
@@ -19,12 +22,53 @@ const TASK_TYPES: TaskType[] = [
   'leave',
 ]
 
-/** Số task / mỗi lần gọi Gemini — gom hết 1 request dễ >180s khi NV có nhiều phiếu. */
-function scoreChunkSize(): number {
+/**
+ * Tối đa số phiếu / một lần gọi API (cùng với giới hạn ký tự — xem buildPayloadBatches).
+ * Mặc định 14: ít round-trip hơn 6, vẫn nhỏ hơn gom cả NV một phát.
+ */
+function scoreMaxTasksPerBatch(): number {
   const raw = import.meta.env.VITE_AI_SCORE_CHUNK_SIZE
-  const n = raw !== undefined && raw !== '' ? parseInt(raw, 10) : 6
-  if (Number.isNaN(n) || n < 1) return 6
-  return Math.min(40, n)
+  const n = raw !== undefined && raw !== '' ? parseInt(raw, 10) : 14
+  if (Number.isNaN(n) || n < 1) return 14
+  return Math.min(50, n)
+}
+
+/** Giới hạn độ dài gần đúng của mảng JSON payload (ký tự) — tránh một request quá nặng. */
+function scoreMaxPayloadChars(): number {
+  const raw = import.meta.env.VITE_AI_SCORE_MAX_PAYLOAD_CHARS
+  const n = raw !== undefined && raw !== '' ? parseInt(raw, 10) : 22_000
+  if (Number.isNaN(n) || n < 4000) return 22_000
+  return Math.min(80_000, n)
+}
+
+type AuditPayloadRow = ReturnType<typeof toAuditPayload>[number]
+
+function buildPayloadBatches(rows: AuditPayloadRow[]): AuditPayloadRow[][] {
+  const maxTasks = scoreMaxTasksPerBatch()
+  const maxChars = scoreMaxPayloadChars()
+  const batches: AuditPayloadRow[][] = []
+  let batch: AuditPayloadRow[] = []
+  let batchChars = 0
+
+  for (const row of rows) {
+    const rowLen = JSON.stringify(row).length
+    const nextChars =
+      batch.length === 0 ? rowLen : batchChars + 1 + rowLen
+
+    if (
+      batch.length >= maxTasks ||
+      (batch.length > 0 && nextChars > maxChars)
+    ) {
+      batches.push(batch)
+      batch = [row]
+      batchChars = rowLen
+    } else {
+      batch.push(row)
+      batchChars = nextChars
+    }
+  }
+  if (batch.length > 0) batches.push(batch)
+  return batches
 }
 
 function sleep(ms: number): Promise<void> {
@@ -103,7 +147,10 @@ async function generateContentWithRetry(
   let lastErr: unknown
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
-      return await enqueueAiRequest(() => model.generateContent(userMessage))
+      return await enqueueAiRequest(
+        () => model.generateContent(userMessage),
+        scoringQueueGapMs(),
+      )
     } catch (e) {
       lastErr = e
       if (!isRetriableApiError(e) || attempt === maxAttempts - 1) {
@@ -302,8 +349,7 @@ export const AIService = {
     const genConfig = {
       generationConfig: {
         responseMimeType: 'application/json' as const,
-        /** Đủ cho một lô (vài chục task) có aiComment. */
-        maxOutputTokens: 12_288,
+        maxOutputTokens: 16_384,
       },
     }
     const systemInstruction = buildSystemInstruction(prompts)
@@ -347,10 +393,10 @@ export const AIService = {
       }
     }
 
-    const chunkSize = scoreChunkSize()
-    if (payloads.length > 0) {
-      for (let i = 0; i < payloads.length; i += chunkSize) {
-        const slice = payloads.slice(i, i + chunkSize)
+    const batches = buildPayloadBatches(payloads)
+    if (batches.length > 0) {
+      for (let idx = 0; idx < batches.length; idx++) {
+        const slice = batches[idx]
         const userMessage = buildUserPayloadMessage(slice)
         const result = await runOneChunk(userMessage)
         const responseText = result.response.text()
@@ -359,7 +405,7 @@ export const AIService = {
           parsed = parseResponseToArray(responseText)
         } catch {
           throw new Error(
-            `AI trả JSON không hợp lệ (lô ${Math.floor(i / chunkSize) + 1}). Thử giảm VITE_AI_SCORE_CHUNK_SIZE hoặc đổi model.`,
+            `AI trả JSON không hợp lệ (lô ${idx + 1}/${batches.length}). Thử giảm VITE_AI_SCORE_CHUNK_SIZE / VITE_AI_SCORE_MAX_PAYLOAD_CHARS hoặc đổi model.`,
           )
         }
         for (const row of parsed) {
