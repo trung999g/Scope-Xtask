@@ -14,6 +14,13 @@ export interface TaskContextType {
     employees: Employee[],
     blockedHashtags: string[],
   ) => Promise<void>
+  /** Đọc nội dung CSV đã export (file cục bộ) — cùng format cột với Sheet; chấm AI vẫn dùng snapshot này. */
+  importTasksFromCsvText: (
+    csvText: string,
+    employees: Employee[],
+    blockedHashtags: string[],
+    sourceLabel?: string,
+  ) => Promise<void>
   setSheetUrl: (url: string) => void
   sheetUrl: string
   apiKey: string
@@ -22,6 +29,11 @@ export interface TaskContextType {
   setAiModel: (m: string) => void
   aiPrompts: AiPromptConfig
   setAiPrompts: (p: AiPromptConfig) => void
+  /** Snapshot CSV lần tải gần nhất (tab Nhập liệu) — dùng build payload AI từ Sheet. */
+  getLastSheetImport: () => {
+    csvText: string
+    blockedHashtags: string[]
+  } | null
 }
 
 export const TaskContext = createContext<TaskContextType | undefined>(undefined)

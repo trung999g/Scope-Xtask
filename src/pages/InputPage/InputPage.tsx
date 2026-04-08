@@ -1,9 +1,10 @@
-import { Binary, Info, Send, Sparkles, Users } from 'lucide-react';
-import React, { useState } from 'react';
+import { Binary, FileUp, Info, Send, Sparkles, Users } from 'lucide-react';
+import React, { useRef, useState } from 'react';
 import { useTask } from '../../hooks/useTask';
 
 export const InputPage: React.FC = () => {
-  const { fetchTasks } = useTask();
+  const { fetchTasks, importTasksFromCsvText } = useTask();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [url, setUrl] = useState('https://docs.google.com/spreadsheets/d/13pygqbhoT9tU-bokO28hXwkkRwsAs69oBGFIia-CH_4/edit?gid=2139411832');
   const [employeeText, setEmployeeText] = useState(`178701 - Nguyễn An Thới
 165141 - Nguyễn Phương Thuỳ
@@ -19,32 +20,63 @@ export const InputPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const parseEmployeeList = () =>
+    employeeText
+      .split('\n')
+      .filter((line) => line.trim())
+      .map((line) => {
+        const match = line.match(/^(\d+)[- ]*(.+)$/);
+        return {
+          id: match ? match[1].trim() : '',
+          name: match ? match[2].trim() : line.trim(),
+        };
+      })
+      .filter((e) => e.id);
+
+  const parseBlockedTags = () => hashtags.split('\n').filter((t) => t.trim());
+
   const handleStart = async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const employeeList = employeeText.split('\n')
-        .filter(line => line.trim())
-        .map(line => {
-          const match = line.match(/^(\d+)[- ]*(.+)$/);
-          return {
-            id: match ? match[1].trim() : '',
-            name: match ? match[2].trim() : line.trim()
-          };
-        })
-        .filter(e => e.id);
+      const employeeList = parseEmployeeList();
+      const blockedTags = parseBlockedTags();
 
-      const blockedTags = hashtags.split('\n').filter(t => t.trim());
-      
       await fetchTasks(url, employeeList, blockedTags);
-      
-      window.setActiveTab?.('output')
+
+      window.setActiveTab?.('output');
     } catch (err: unknown) {
       setError(
         err instanceof Error
           ? err.message
           : 'Không thể tải dữ liệu từ Google Sheet',
-      )
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePickCsvFile = () => fileInputRef.current?.click();
+
+  const handleCsvFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+
+    setIsLoading(true);
+    setError(null);
+    try {
+      const text = await file.text();
+      const employeeList = parseEmployeeList();
+      const blockedTags = parseBlockedTags();
+      await importTasksFromCsvText(text, employeeList, blockedTags, file.name);
+      window.setActiveTab?.('output');
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Không đọc được file CSV',
+      );
     } finally {
       setIsLoading(false);
     }
@@ -55,7 +87,9 @@ export const InputPage: React.FC = () => {
       <section className="space-y-4 max-w-3xl">
         <h2 className="text-4xl font-black text-slate-900 tracking-tight">CẤU HÌNH DỮ LIỆU</h2>
         <p className="text-slate-500 font-medium text-lg leading-relaxed">
-          Import phiếu từ Google Sheet. Điểm số và phân loại độ khó <strong>chỉ</strong> được gán sau khi bạn chạy AI trên tab Kết quả (cấu hình model/prompt tại tab <strong>Prompt AI</strong>).
+          Import phiếu từ <strong>Google Sheet</strong> hoặc file <strong>CSV</strong> đã export (cùng bố cục cột).
+          Chấm điểm dùng API <strong>ChatGPT</strong> (OpenAI), mặc định <strong>gpt-4o</strong> — key/model ở tab{' '}
+          <strong>Prompt AI</strong>; tab Kết quả bấm <strong>Chấm AI</strong> (hoặc bật <code className="text-xs bg-slate-100 px-1 rounded">VITE_AI_AUTO_SCORE</code>).
         </p>
       </section>
 
@@ -77,7 +111,12 @@ export const InputPage: React.FC = () => {
                <div className="space-y-3">
                   <div className="flex items-center gap-2 text-[10px] text-indigo-500 font-bold bg-white/50 p-2 rounded-lg border border-indigo-50">
                      <Info size={12} />
-                     <span>Nhập API key và chỉnh prompt tại tab Prompt AI (Google AI Studio / Gemini). Sau khi tải sheet, mở tab Kết quả → chọn nhân viên → <strong>Chấm AI</strong> (mặc định không chấm tự động để tránh 429; bật lại bằng VITE_AI_AUTO_SCORE=true trong .env).</span>
+                     <span>
+                       Tab Prompt AI: key OpenAI (<code className="text-[9px]">sk-…</code>) hoặc env{' '}
+                       <code className="text-[9px]">VITE_OPENAI_API_KEY</code> /{' '}
+                       <code className="text-[9px]">VITE_AI_API_KEY</code>; model mặc định{' '}
+                       <code className="text-[9px]">gpt-4o</code>. Sau khi import → tab Kết quả → <strong>Chấm AI</strong>.
+                     </span>
                   </div>
                </div>
             </div>
@@ -99,6 +138,22 @@ export const InputPage: React.FC = () => {
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-slate-400 outline-none transition-all"
                   />
                </div>
+               <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".csv,text/csv"
+                  className="hidden"
+                  onChange={handleCsvFileChange}
+               />
+               <button
+                  type="button"
+                  onClick={handlePickCsvFile}
+                  disabled={isLoading}
+                  className="mt-3 w-full flex items-center justify-center gap-2 rounded-xl border-2 border-dashed border-slate-300 bg-white py-3 text-xs font-bold text-slate-600 hover:border-indigo-400 hover:bg-indigo-50/50 hover:text-indigo-800 transition-all disabled:opacity-50"
+               >
+                  <FileUp size={16} />
+                  Hoặc chọn file CSV từ máy (UTF-8)
+               </button>
             </div>
          </div>
 

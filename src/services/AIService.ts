@@ -6,12 +6,16 @@ import {
     enqueueAiRequest,
     scoringQueueGapMs,
 } from '@/services/aiRequestGate'
+import type { SheetAiAuditRow } from '@/services/GoogleSheetService'
+import { GoogleSheetService } from '@/services/GoogleSheetService'
 import type { Task, TaskType } from '@/types'
 import type { AiPromptConfig } from '@/types/aiPrompts'
+import { isOpenAiModel } from '@/utils/llmKey'
 import {
     auditPayloadId,
     normalizeXtaskId,
 } from '@/utils/taskIds'
+import type { GoogleGenerativeAI } from '@google/generative-ai'
 
 const TASK_TYPES: TaskType[] = [
   'feature',
@@ -41,13 +45,11 @@ function scoreMaxPayloadChars(): number {
   return Math.min(80_000, n)
 }
 
-type AuditPayloadRow = ReturnType<typeof toAuditPayload>[number]
-
-function buildPayloadBatches(rows: AuditPayloadRow[]): AuditPayloadRow[][] {
+function buildPayloadBatches(rows: SheetAiAuditRow[]): SheetAiAuditRow[][] {
   const maxTasks = scoreMaxTasksPerBatch()
   const maxChars = scoreMaxPayloadChars()
-  const batches: AuditPayloadRow[][] = []
-  let batch: AuditPayloadRow[] = []
+  const batches: SheetAiAuditRow[][] = []
+  let batch: SheetAiAuditRow[] = []
   let batchChars = 0
 
   for (const row of rows) {
@@ -179,6 +181,86 @@ async function generateContentWithRetry(
     : new Error('generateContentWithRetry: không thành công')
 }
 
+const OPENAI_USER_JSON_HINT = `
+
+Trả về đúng một object JSON (không markdown) với khóa "results" là mảng các object theo hợp đồng đầu ra; mỗi phần tử phải khớp "id" trong PAYLOAD.`
+
+async function openAiChatWithRetry(
+  apiKey: string,
+  model: string,
+  systemInstruction: string,
+  userMessage: string,
+): Promise<string> {
+  const maxAttempts = 12
+  let lastErr: unknown
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await enqueueAiRequest(async () => {
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model: model.trim() || 'gpt-4o',
+            messages: [
+              { role: 'system', content: systemInstruction },
+              {
+                role: 'user',
+                content: userMessage + OPENAI_USER_JSON_HINT,
+              },
+            ],
+            temperature: 0.2,
+            response_format: { type: 'json_object' },
+          }),
+        })
+        const raw = await res.text()
+        if (!res.ok) {
+          throw new Error(`OpenAI [${res.status}]: ${raw}`)
+        }
+        let data: unknown
+        try {
+          data = JSON.parse(raw)
+        } catch {
+          throw new Error(`OpenAI: body không phải JSON: ${raw.slice(0, 200)}`)
+        }
+        const content = (
+          data as { choices?: { message?: { content?: string } }[] }
+        ).choices?.[0]?.message?.content
+        if (!content || typeof content !== 'string') {
+          throw new Error('OpenAI: thiếu choices[0].message.content')
+        }
+        return content
+      }, scoringQueueGapMs())
+    } catch (e) {
+      lastErr = e
+      if (!isRetriableApiError(e) || attempt === maxAttempts - 1) {
+        if (isRetriableApiError(e)) {
+          const base = e instanceof Error ? e.message : String(e)
+          let hint: string
+          if (isLikelyOverload503(e)) {
+            hint =
+              'Máy chủ OpenAI tạm thời quá tải hoặc bảo trì. Đợi vài phút rồi thử lại.'
+          } else if (isLikelyQuota429(e)) {
+            hint =
+              'Hết hạn mức / rate limit OpenAI (429). Kiểm tra billing, tăng VITE_AI_GLOBAL_GAP_MS, hoặc thử model khác.'
+          } else {
+            hint =
+              'Lỗi mạng hoặc API tạm thời — thử lại sau hoặc kiểm tra key OpenAI.'
+          }
+          throw new Error(`${base}\n\n${hint}`)
+        }
+        throw e
+      }
+      await sleep(retryDelayMs(e, attempt))
+    }
+  }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error('openAiChatWithRetry: không thành công')
+}
+
 type AiScoreEntry = {
   id: string
   taskType?: string
@@ -255,31 +337,31 @@ ${prompts.integrityRules}
 ${prompts.jsonOutputContract}`
 }
 
-function buildUserPayloadMessage(
-  payload: ReturnType<typeof toAuditPayload>,
-): string {
-  return `Trả về ĐÚNG một mảng JSON hợp lệ (application/json, không markdown).
+function buildUserPayloadMessage(payload: SheetAiAuditRow[]): string {
+  return `Trả về ĐÚNG một mảng JSON hợp lệ (application/json, không markdown), hoặc object { "results": [...] } nếu API bắt buộc (OpenAI).
 
-Với MỖI phần tử trong PAYLOAD bên dưới phải có ĐÚNG một object tương ứng trong mảng; trường "id" khớp từng phần tử (không thêm/bớt id).
+Với MỖI phần tử trong PAYLOAD bên dưới phải có ĐÚNG một object tương ứng trong mảng kết quả; trường "id" khớp từng phần tử (không thêm/bớt id).
 
-PAYLOAD (lô hiện tại):
+PAYLOAD (lô hiện tại) — dữ liệu theo cột export Sheet:
 ${JSON.stringify(payload)}`
 }
 
-function toAuditPayload(tasks: Task[]) {
+/** Dự phòng khi chưa có snapshot CSV (không khuyến nghị). */
+function auditRowsFromTasksFallback(tasks: Task[]): SheetAiAuditRow[] {
   return tasks.map((t) => {
-    const title = (t.title ?? '').trim()
-    const desc = (t.description ?? '').trim()
+    const titleTrim = (t.title ?? '').trim()
+    const descTrim = (t.description ?? '').trim()
     return {
       id: auditPayloadId(t),
       mainTaskId: t.mainTaskId,
+      subTaskId: t.subTaskId,
       xtaskRole: t.xtaskRole,
       title: t.title,
       desc: t.description,
-      /** True khi CSV chỉ có một cột nội dung (title === description) */
-      descIsOnlyTitle: desc === title && title.length > 0,
+      descIsOnlyTitle: descTrim === titleTrim && titleTrim.length > 0,
       lateDays: t.lateDays,
       workingHours: t.workingHours ?? 0,
+      assigneeCell: [t.assigneeId, t.assigneeName].filter(Boolean).join(' — '),
     }
   })
 }
@@ -334,49 +416,90 @@ function mergeAiOntoTask(task: Task, entry: AiScoreEntry | undefined): Task {
 
 export const AIService = {
   /**
-   * Chấm toàn bộ điểm & phân loại bằng AI (Google AI Studio / Gemini API).
+   * Chấm điểm & phân loại: OpenAI (gpt-*) hoặc Gemini theo model.
+   * Payload AI lấy từ CSV qua GoogleSheetService khi truyền `sheetCsvText` (khuyến nghị).
    */
   async scoreTasksWithAI(
     tasks: Task[],
     apiKey: string,
     model: string,
     prompts: AiPromptConfig,
+    options?: {
+      sheetCsvText?: string
+      blockedHashtags?: string[]
+    },
   ): Promise<Task[]> {
     if (!apiKey || tasks.length === 0) return tasks
 
-    const { GoogleGenerativeAI } = await import('@google/generative-ai')
-    const genAI = new GoogleGenerativeAI(apiKey)
+    const resolvedModel = model.trim() || DEFAULT_AI_MODEL
+    const useOpenAi = isOpenAiModel(resolvedModel)
+    const systemInstruction = buildSystemInstruction(prompts)
+
     const genConfig = {
       generationConfig: {
         responseMimeType: 'application/json' as const,
         maxOutputTokens: 16_384,
       },
     }
-    const systemInstruction = buildSystemInstruction(prompts)
 
-    const primaryId = model.trim() || DEFAULT_AI_MODEL
-    const generativeModel = genAI.getGenerativeModel({
-      model: primaryId,
-      systemInstruction,
-      ...genConfig,
-    })
-    const fallbackId = (
-      (import.meta.env.VITE_AI_FALLBACK_MODEL as string | undefined)?.trim() ||
-      DEFAULT_AI_FALLBACK_MODEL
-    ).trim()
+    let generativeModel: {
+      generateContent: (p: string) => Promise<{ response: { text: () => string } }>
+    } | null = null
+    let genAI: GoogleGenerativeAI | null = null
+    let primaryId = ''
+    let fallbackId = ''
+
+    if (!useOpenAi) {
+      const { GoogleGenerativeAI } = await import('@google/generative-ai')
+      genAI = new GoogleGenerativeAI(apiKey)
+      primaryId = resolvedModel
+      generativeModel = genAI.getGenerativeModel({
+        model: primaryId,
+        systemInstruction,
+        ...genConfig,
+      })
+      fallbackId = (
+        (import.meta.env.VITE_AI_FALLBACK_MODEL as string | undefined)?.trim() ||
+        DEFAULT_AI_FALLBACK_MODEL
+      ).trim()
+    }
 
     const byId = new Map<string, AiScoreEntry>()
 
     const toScore = tasks.filter((t) => !t.isDuplicate)
-    const payloads = toAuditPayload(toScore)
+    let payloads: SheetAiAuditRow[]
+    if (options?.sheetCsvText) {
+      payloads = await GoogleSheetService.buildAiAuditPayloadForTasks(
+        options.sheetCsvText,
+        options.blockedHashtags ?? [],
+        toScore,
+      )
+      if (payloads.length === 0 && toScore.length > 0) {
+        throw new Error(
+          'Không ghép được phiếu với CSV đã tải. Tải lại sheet ở tab Nhập liệu (cùng hashtag chặn).',
+        )
+      }
+    } else {
+      payloads = auditRowsFromTasksFallback(toScore)
+    }
 
     const runOneChunk = async (
       userMessage: string,
     ): Promise<{ response: { text: () => string } }> => {
+      if (useOpenAi) {
+        const text = await openAiChatWithRetry(
+          apiKey,
+          resolvedModel,
+          systemInstruction,
+          userMessage,
+        )
+        return { response: { text: () => text } }
+      }
       try {
-        return await generateContentWithRetry(generativeModel, userMessage)
+        return await generateContentWithRetry(generativeModel!, userMessage)
       } catch (e) {
         if (
+          genAI &&
           fallbackId &&
           fallbackId !== primaryId &&
           (isLikelyOverload503(e) || isLikelyQuota429(e))

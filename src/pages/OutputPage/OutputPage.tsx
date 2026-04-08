@@ -6,11 +6,11 @@ import { AIService } from '../../services/AIService';
 import { GoogleSheetService } from '../../services/GoogleSheetService';
 import type { Task } from '../../types';
 import { ScoringEngine } from '../../utils/ScoringEngine';
-import { resolveGeminiApiKey } from '../../utils/geminiKey';
+import { isOpenAiModel, resolveLlmApiKey } from '../../utils/llmKey';
 import { stableTaskRowKey } from '../../utils/taskIds';
 
 export const OutputPage: React.FC = () => {
-  const { employees, selectedEmployeeId, setSelectedEmployeeId, tasks, setTasks, apiKey, aiModel, aiPrompts } = useTask();
+  const { employees, selectedEmployeeId, setSelectedEmployeeId, tasks, setTasks, apiKey, aiModel, aiPrompts, getLastSheetImport } = useTask();
   const [isAiLoading, setIsAiLoading] = useState(false);
 
   const currentEmployee = useMemo(() => 
@@ -66,12 +66,24 @@ export const OutputPage: React.FC = () => {
   }, [employeeTasks])
 
   const handleAiReview = async () => {
-    const key = resolveGeminiApiKey(apiKey)
+    const key = resolveLlmApiKey(apiKey, aiModel)
     if (!key) {
-      alert("Vui lòng mở tab \"Prompt AI\" và nhập API key (Google AI Studio).");
+      alert(
+        isOpenAiModel(aiModel)
+          ? 'Vui lòng mở tab "Prompt AI" và nhập API key OpenAI (sk-…), hoặc cấu hình VITE_OPENAI_API_KEY.'
+          : 'Vui lòng mở tab "Prompt AI" và nhập API key Google AI Studio (Gemini).',
+      );
       return;
     }
     if (employeeTasks.length === 0) return;
+
+    const sheetSnap = getLastSheetImport()
+    if (!sheetSnap?.csvText) {
+      alert(
+        'Chưa có file CSV sheet trong phiên này. Vào tab "Nhập liệu" và tải lại link Google Sheet rồi chấm lại.',
+      );
+      return;
+    }
 
     setIsAiLoading(true);
     try {
@@ -81,6 +93,10 @@ export const OutputPage: React.FC = () => {
         key,
         aiModel,
         aiPrompts,
+        {
+          sheetCsvText: sheetSnap.csvText,
+          blockedHashtags: sheetSnap.blockedHashtags,
+        },
       )
       // Ghép theo main+sub để khớp sheet; chỉ subTaskId dễ trùng hoặc lệch với id AI.
       const byRow = new Map<string, Task>(
@@ -186,8 +202,10 @@ export const OutputPage: React.FC = () => {
                     title={
                       employeeTasks.length === 0
                         ? 'Chưa có task cho nhân viên này'
-                        : !resolveGeminiApiKey(apiKey)
-                          ? 'Nhập API key tại tab Prompt AI (Google AI Studio)'
+                        : !resolveLlmApiKey(apiKey, aiModel)
+                          ? isOpenAiModel(aiModel)
+                            ? 'Nhập API key OpenAI tại tab Prompt AI'
+                            : 'Nhập API key tại tab Prompt AI (Google AI Studio)'
                           : undefined
                     }
                     className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-indigo-100 disabled:opacity-50"

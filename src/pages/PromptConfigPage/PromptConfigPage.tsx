@@ -3,8 +3,12 @@ import {
     DEFAULT_AI_PROMPTS,
 } from '@/constants/aiPromptDefaults'
 import { useTask } from '@/hooks/useTask'
-import { hasBuiltInGeminiKey } from '@/utils/geminiKey'
 import type { AiPromptConfig } from '@/types/aiPrompts'
+import {
+    describeBuiltInLlmKeySource,
+    hasBuiltInLlmKey,
+    isOpenAiModel,
+} from '@/utils/llmKey'
 import { Info, RotateCcw, Save } from 'lucide-react'
 import React, { useState } from 'react'
 
@@ -54,7 +58,7 @@ export const PromptConfigPage: React.FC = () => {
   const [draft, setDraft] = useState<AiPromptConfig>(aiPrompts)
   const [modelDraft, setModelDraft] = useState(aiModel)
   const [keyDraft, setKeyDraft] = useState(() =>
-    hasBuiltInGeminiKey() ? '' : apiKey,
+    hasBuiltInLlmKey(aiModel) ? '' : apiKey,
   )
   const [savedAt, setSavedAt] = useState<string | null>(null)
 
@@ -65,7 +69,7 @@ export const PromptConfigPage: React.FC = () => {
   const handleSave = () => {
     setAiPrompts(draft)
     setAiModel(modelDraft.trim() || DEFAULT_AI_MODEL)
-    if (!hasBuiltInGeminiKey()) {
+    if (!hasBuiltInLlmKey(modelDraft.trim() || DEFAULT_AI_MODEL)) {
       setApiKey(keyDraft.trim())
     }
     setSavedAt(new Date().toLocaleTimeString('vi-VN'))
@@ -88,22 +92,28 @@ export const PromptConfigPage: React.FC = () => {
             <span>Về NotebookLM và key miễn phí</span>
           </div>
           <p className="mt-2 leading-relaxed">
-            <strong>NotebookLM</strong> hiện{' '}
-            <strong>không cung cấp API key</strong> kiểu dán vào web app cá nhân.
-            Tab này dùng <strong>Google AI Studio</strong> (Gemini API — thường có
-            hạn mức miễn phí): tạo key tại{' '}
+            Mặc định app dùng <strong>OpenAI</strong> (<code className="rounded bg-white/80 px-1">gpt-4o</code>) — tạo key tại{' '}
+            <a
+              href="https://platform.openai.com/api-keys"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold underline decoration-amber-600 underline-offset-2"
+            >
+              platform.openai.com
+            </a>
+            , hoặc cấu hình{' '}
+            <code className="rounded bg-white/80 px-1">VITE_OPENAI_API_KEY</code> /{' '}
+            <code className="rounded bg-white/80 px-1">VITE_AI_API_KEY</code> khi deploy.
+            Model <code className="rounded bg-white/80 px-1">gemini-*</code> dùng{' '}
             <a
               href="https://aistudio.google.com/apikey"
               target="_blank"
               rel="noopener noreferrer"
               className="font-bold underline decoration-amber-600 underline-offset-2"
             >
-              aistudio.google.com/apikey
+              Google AI Studio
             </a>
-            . Nếu lỗi <strong>429 / quota</strong>: ưu tiên{' '}
-            <code className="rounded bg-white/80 px-1">gemini-2.5-flash-lite</code> (chính) và{' '}
-            <code className="rounded bg-white/80 px-1">gemini-2.5-flash</code> (dự phòng), tăng{' '}
-            <code className="rounded bg-white/80 px-1">VITE_AI_GLOBAL_GAP_MS</code>, hoặc bật billing.
+            . Nếu <strong>429</strong>: tăng <code className="rounded bg-white/80 px-1">VITE_AI_GLOBAL_GAP_MS</code> hoặc kiểm tra billing nhà cung cấp.
           </p>
         </div>
       </section>
@@ -112,16 +122,22 @@ export const PromptConfigPage: React.FC = () => {
         <h3 className="text-sm font-black uppercase tracking-widest text-slate-400">
           Kết nối
         </h3>
-        {hasBuiltInGeminiKey() ? (
+        {hasBuiltInLlmKey(modelDraft.trim() || DEFAULT_AI_MODEL) ? (
           <p className="rounded-xl border border-emerald-200 bg-emerald-50/90 px-4 py-3 text-xs font-medium text-emerald-900 leading-relaxed">
-            Đang dùng <strong>key chung</strong> từ biến môi trường{' '}
-            <code className="rounded bg-white/80 px-1">VITE_GEMINI_API_KEY</code> (build /
-            Vercel). Không cần dán key vào ô dưới; phiên làm việc này dùng mặc định đó.
+            Đang lấy key từ biến môi trường build (
+            <code className="rounded bg-white/80 px-1">
+              {describeBuiltInLlmKeySource(
+                modelDraft.trim() || DEFAULT_AI_MODEL,
+              ) ?? 'env'}
+            </code>
+            ) — không cần dán key vào ô dưới. Có thể dùng{' '}
+            <code className="rounded bg-white/80 px-1">VITE_AI_API_KEY</code>{' '}
+            làm key chung nếu không đặt tên riêng theo provider.
           </p>
         ) : null}
         <label className="block space-y-1">
           <span className="text-[10px] font-black uppercase text-slate-400">
-            API key (Google AI Studio) — chỉ khi không cấu hình VITE_GEMINI_API_KEY
+            API key — OpenAI (sk-…) hoặc Gemini (AIza…), theo Model ID đã chọn
           </span>
           <input
             type="password"
@@ -129,9 +145,13 @@ export const PromptConfigPage: React.FC = () => {
             value={keyDraft}
             onChange={(e) => setKeyDraft(e.target.value)}
             placeholder={
-              hasBuiltInGeminiKey() ? 'Bỏ trống — đã có key dự án' : 'AIza...'
+              hasBuiltInLlmKey(modelDraft.trim() || DEFAULT_AI_MODEL)
+                ? 'Bỏ trống — đã có key dự án'
+                : isOpenAiModel(modelDraft.trim() || DEFAULT_AI_MODEL)
+                  ? 'sk-...'
+                  : 'AIza...'
             }
-            disabled={hasBuiltInGeminiKey()}
+            disabled={hasBuiltInLlmKey(modelDraft.trim() || DEFAULT_AI_MODEL)}
             className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
           />
         </label>
@@ -145,9 +165,9 @@ export const PromptConfigPage: React.FC = () => {
             className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-slate-300"
           />
           <p className="text-xs text-slate-500">
-            Mặc định: {DEFAULT_AI_MODEL}. Model cũ (<code className="text-[10px]">gemini-2.0-flash*</code>) trong
-            trình duyệt sẽ được nâng tự động khi tải lại. Nếu vẫn 429: tăng{' '}
-            <code className="text-[10px]">VITE_AI_GLOBAL_GAP_MS</code> (vd. 12000) trong{' '}
+            Mặc định: <code className="text-[10px]">{DEFAULT_AI_MODEL}</code> (OpenAI). Ví dụ Gemini:{' '}
+            <code className="text-[10px]">gemini-2.5-flash-lite</code>. Nếu 429: tăng{' '}
+            <code className="text-[10px]">VITE_AI_GLOBAL_GAP_MS</code> trong{' '}
             <code className="text-[10px]">.env</code>.
           </p>
         </label>

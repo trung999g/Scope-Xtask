@@ -6,6 +6,11 @@ interface ImportMetaEnv {
   readonly VITE_APP_GIT_SHA: string
   readonly VITE_API_BASE_URL?: string
   readonly VITE_GEMINI_API_KEY?: string
+  readonly VITE_OPENAI_API_KEY?: string
+  /**
+   * Key LLM chung (OpenAI hoặc Gemini — phải khớp model đang chọn). Dùng khi không set VITE_OPENAI_API_KEY / VITE_GEMINI_API_KEY.
+   */
+  readonly VITE_AI_API_KEY?: string
   readonly VITE_AI_MODEL?: string
   /** Khoảng nghỉ giữa mỗi batch chấm AI (ms), giảm 429 RPM */
   readonly VITE_AI_CHUNK_GAP_MS?: string

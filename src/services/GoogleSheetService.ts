@@ -1,6 +1,25 @@
 import Papa from "papaparse";
-import { Task } from "../types";
-import { normalizeXtaskId } from "../utils/taskIds";
+import type { Task, XtaskRole } from "../types";
+import { auditPayloadId, normalizeXtaskId, stableTaskRowKey } from "../utils/taskIds";
+
+/**
+ * Một dòng nội dung gửi AI — chỉ dựa trên ô CSV (GoogleSheetService), không lấy từ object Task ở AIService.
+ */
+export type SheetAiAuditRow = {
+  id: string;
+  mainTaskId: string;
+  subTaskId: string;
+  xtaskRole: XtaskRole;
+  title: string;
+  desc: string;
+  descIsOnlyTitle: boolean;
+  lateDays: number;
+  workingHours: number;
+  /** Cột D — nguyên bản export */
+  assigneeCell: string;
+  /** Cột L — điểm ghi trên sheet (nếu parse được) */
+  sheetPoints?: number;
+};
 
 export const CSV_COLUMNS = {
   MAIN_ID: 0, // A: Task ID
@@ -19,16 +38,20 @@ export const CSV_COLUMNS = {
 const XTASK_BASE_URL = "https://xtask.tgdd.vn/group/136380817";
 
 export const GoogleSheetService = {
-  async parseTasksFromCsv(
+  /**
+   * Parse CSV → tasks + bản ghi audit song song (cùng chỉ số dòng), sau detectDuplicates.
+   */
+  async parseTasksFromCsvWithAudits(
     csvText: string,
     blockedHashtags: string[] = [],
-  ): Promise<Task[]> {
+  ): Promise<{ tasks: Task[]; audits: SheetAiAuditRow[] }> {
     return new Promise((resolve, reject) => {
       Papa.parse(csvText, {
         skipEmptyLines: true,
         complete: (results: Papa.ParseResult<string[]>) => {
           const rawData = results.data as string[][];
           const tasks: Task[] = [];
+          const audits: SheetAiAuditRow[] = [];
 
           for (let i = 1; i < rawData.length; i++) {
             const row = rawData[i];
@@ -43,13 +66,12 @@ export const GoogleSheetService = {
             const assigneeId = (assigneeMatch ? assigneeMatch[1] : "").trim();
             const assigneeName = assigneeRaw.replace(/^\d+[- ]*/, "").trim();
 
-            const hasDistinctSub =
-              subId !== "" && subId !== mainId;
-            const xtaskRole = hasDistinctSub ? "sub" : "main";
+            const hasDistinctSub = subId !== "" && subId !== mainId;
+            const xtaskRole: XtaskRole = hasDistinctSub ? "sub" : "main";
 
             const task: Task = {
               mainTaskId: mainId,
-              subTaskId: subId || mainId, // Fallback if no subId
+              subTaskId: subId || mainId,
               xtaskRole,
               title: title,
               description: title,
@@ -80,15 +102,72 @@ export const GoogleSheetService = {
               task.penaltyPercent = task.lateDays * 2;
             }
 
+            const pointsCell = (row[CSV_COLUMNS.POINTS] || "").trim();
+            const pointsParsed = parseFloat(pointsCell.replace(/,/g, ""));
+            const sheetPoints = Number.isFinite(pointsParsed)
+              ? pointsParsed
+              : undefined;
+
+            const titleTrim = task.title.trim();
+            const descTrim = task.description.trim();
+            const audit: SheetAiAuditRow = {
+              id: auditPayloadId(task),
+              mainTaskId: task.mainTaskId,
+              subTaskId: task.subTaskId,
+              xtaskRole,
+              title: task.title,
+              desc: task.description,
+              descIsOnlyTitle:
+                descTrim === titleTrim && titleTrim.length > 0,
+              lateDays: task.lateDays,
+              workingHours: task.workingHours ?? 0,
+              assigneeCell: assigneeRaw.trim(),
+              sheetPoints,
+            };
+
             tasks.push(task);
+            audits.push(audit);
           }
 
           this.detectDuplicates(tasks, blockedHashtags);
-          resolve(tasks);
+          resolve({ tasks, audits });
         },
         error: (error: unknown) => reject(error),
       });
     });
+  },
+
+  async parseTasksFromCsv(
+    csvText: string,
+    blockedHashtags: string[] = [],
+  ): Promise<Task[]> {
+    const { tasks } = await this.parseTasksFromCsvWithAudits(
+      csvText,
+      blockedHashtags,
+    );
+    return tasks;
+  },
+
+  /**
+   * Payload AI cho tập `subsetTasks`: chỉ các dòng khớp CSV (theo main+sub), không duplicate,
+   * dữ liệu mô tả lấy từ ô Sheet (qua audit), không đọc lại từ Task trong AIService.
+   */
+  async buildAiAuditPayloadForTasks(
+    csvText: string,
+    blockedHashtags: string[],
+    subsetTasks: Task[],
+  ): Promise<SheetAiAuditRow[]> {
+    const { tasks, audits } = await this.parseTasksFromCsvWithAudits(
+      csvText,
+      blockedHashtags,
+    );
+    const keySet = new Set(subsetTasks.map((t) => stableTaskRowKey(t)));
+    const out: SheetAiAuditRow[] = [];
+    for (let i = 0; i < tasks.length; i++) {
+      if (tasks[i].isDuplicate) continue;
+      if (keySet.has(stableTaskRowKey(tasks[i]))) out.push(audits[i]);
+    }
+    return out;
   },
 
   parseDate(dateStr: string): Date | undefined {
