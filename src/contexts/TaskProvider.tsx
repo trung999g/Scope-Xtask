@@ -7,6 +7,7 @@ import { AIService } from '@/services/AIService'
 import { GoogleSheetService } from '@/services/GoogleSheetService'
 import type { Employee, Task } from '@/types'
 import type { AiPromptConfig } from '@/types/aiPrompts'
+import { resolveGeminiApiKey } from '@/utils/geminiKey'
 import {
   useCallback,
   useEffect,
@@ -18,12 +19,9 @@ import {
 
 const LS_API = 'gemini_api_key'
 const LS_MODEL = 'xtask_ai_model_v1'
-const LS_PROMPTS = 'xtask_ai_prompts_v1'
 
-function readInitialApiKey(): string {
-  if (import.meta.env.VITE_GEMINI_API_KEY) {
-    return import.meta.env.VITE_GEMINI_API_KEY
-  }
+/** Key do người dùng/nhập tay (không gồm VITE_GEMINI_API_KEY — key chung lấy qua resolveGeminiApiKey). */
+function readStoredUserApiKey(): string {
   try {
     return localStorage.getItem(LS_API) ?? ''
   } catch {
@@ -34,14 +32,6 @@ function readInitialApiKey(): string {
 function readInitialModel(): string {
   try {
     const stored = localStorage.getItem(LS_MODEL)
-    if (
-      stored === 'gemini-2.0-flash' ||
-      stored === 'gemini-flash-latest' ||
-      stored === 'gemini-2.0-flash-lite'
-    ) {
-      localStorage.setItem(LS_MODEL, DEFAULT_AI_MODEL)
-      return DEFAULT_AI_MODEL
-    }
     return (
       stored || import.meta.env.VITE_AI_MODEL || DEFAULT_AI_MODEL
     )
@@ -50,15 +40,9 @@ function readInitialModel(): string {
   }
 }
 
+/** Luôn rubric mặc định trong code; không merge/ghi localStorage (tránh tự đổi prompt cũ). */
 function readInitialPrompts(): AiPromptConfig {
-  try {
-    const raw = localStorage.getItem(LS_PROMPTS)
-    if (!raw) return DEFAULT_AI_PROMPTS
-    const parsed = JSON.parse(raw) as Partial<AiPromptConfig>
-    return { ...DEFAULT_AI_PROMPTS, ...parsed }
-  } catch {
-    return DEFAULT_AI_PROMPTS
-  }
+  return DEFAULT_AI_PROMPTS
 }
 
 export function TaskProvider({ children }: { children: ReactNode }) {
@@ -68,7 +52,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
     null,
   )
   const [sheetUrl, setSheetUrl] = useState('')
-  const [apiKey, setApiKey] = useState(readInitialApiKey)
+  const [apiKey, setApiKey] = useState(readStoredUserApiKey)
 
   const [aiModel, setAiModelState] = useState(readInitialModel)
   const [aiPrompts, setAiPromptsState] = useState(readInitialPrompts)
@@ -89,16 +73,16 @@ export function TaskProvider({ children }: { children: ReactNode }) {
 
   const setAiPrompts = useCallback((p: AiPromptConfig) => {
     setAiPromptsState(p)
-    try {
-      localStorage.setItem(LS_PROMPTS, JSON.stringify(p))
-    } catch {
-      /* ignore */
-    }
   }, [])
 
   useEffect(() => {
-    if (apiKey && !import.meta.env.VITE_GEMINI_API_KEY) {
-      localStorage.setItem(LS_API, apiKey)
+    if (import.meta.env.VITE_GEMINI_API_KEY) return
+    if (apiKey) {
+      try {
+        localStorage.setItem(LS_API, apiKey)
+      } catch {
+        /* ignore */
+      }
     }
   }, [apiKey])
 
@@ -139,9 +123,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
 
         const { apiKey: keyFromState, aiModel: model, aiPrompts: prompts } =
           aiConfigRef.current
-        const key =
-          (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ||
-          keyFromState
+        const key = resolveGeminiApiKey(keyFromState)
         if (!autoScore || !key || filteredTasks.length === 0) return
 
         try {

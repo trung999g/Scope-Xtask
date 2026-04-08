@@ -3,6 +3,7 @@ import {
     DEFAULT_AI_PROMPTS,
 } from '@/constants/aiPromptDefaults'
 import { useTask } from '@/hooks/useTask'
+import { hasBuiltInGeminiKey } from '@/utils/geminiKey'
 import type { AiPromptConfig } from '@/types/aiPrompts'
 import { Info, RotateCcw, Save } from 'lucide-react'
 import React, { useState } from 'react'
@@ -52,7 +53,9 @@ export const PromptConfigPage: React.FC = () => {
   } = useTask()
   const [draft, setDraft] = useState<AiPromptConfig>(aiPrompts)
   const [modelDraft, setModelDraft] = useState(aiModel)
-  const [keyDraft, setKeyDraft] = useState(apiKey)
+  const [keyDraft, setKeyDraft] = useState(() =>
+    hasBuiltInGeminiKey() ? '' : apiKey,
+  )
   const [savedAt, setSavedAt] = useState<string | null>(null)
 
   const updateField = (key: keyof AiPromptConfig, value: string) => {
@@ -62,7 +65,9 @@ export const PromptConfigPage: React.FC = () => {
   const handleSave = () => {
     setAiPrompts(draft)
     setAiModel(modelDraft.trim() || DEFAULT_AI_MODEL)
-    setApiKey(keyDraft)
+    if (!hasBuiltInGeminiKey()) {
+      setApiKey(keyDraft.trim())
+    }
     setSavedAt(new Date().toLocaleTimeString('vi-VN'))
   }
 
@@ -107,17 +112,27 @@ export const PromptConfigPage: React.FC = () => {
         <h3 className="text-sm font-black uppercase tracking-widest text-slate-400">
           Kết nối
         </h3>
+        {hasBuiltInGeminiKey() ? (
+          <p className="rounded-xl border border-emerald-200 bg-emerald-50/90 px-4 py-3 text-xs font-medium text-emerald-900 leading-relaxed">
+            Đang dùng <strong>key chung</strong> từ biến môi trường{' '}
+            <code className="rounded bg-white/80 px-1">VITE_GEMINI_API_KEY</code> (build /
+            Vercel). Không cần dán key vào ô dưới; phiên làm việc này dùng mặc định đó.
+          </p>
+        ) : null}
         <label className="block space-y-1">
           <span className="text-[10px] font-black uppercase text-slate-400">
-            API key (Google AI Studio)
+            API key (Google AI Studio) — chỉ khi không cấu hình VITE_GEMINI_API_KEY
           </span>
           <input
             type="password"
             autoComplete="off"
             value={keyDraft}
             onChange={(e) => setKeyDraft(e.target.value)}
-            placeholder="AIza..."
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-slate-300"
+            placeholder={
+              hasBuiltInGeminiKey() ? 'Bỏ trống — đã có key dự án' : 'AIza...'
+            }
+            disabled={hasBuiltInGeminiKey()}
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
           />
         </label>
         <label className="block space-y-1">
@@ -157,6 +172,11 @@ export const PromptConfigPage: React.FC = () => {
           </div>
         ))}
       </div>
+
+      <p className="text-xs text-slate-500">
+        Rubric mặc định luôn theo bản trong code; chỉnh sửa ở đây chỉ có hiệu sau khi bấm{' '}
+        <strong>Lưu</strong> trong phiên hiện tại (tải lại trang sẽ về mặc định gốc).
+      </p>
 
       <div className="flex flex-wrap items-center gap-3">
         <button

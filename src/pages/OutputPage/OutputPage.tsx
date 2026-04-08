@@ -6,6 +6,7 @@ import { AIService } from '../../services/AIService';
 import { GoogleSheetService } from '../../services/GoogleSheetService';
 import type { Task } from '../../types';
 import { ScoringEngine } from '../../utils/ScoringEngine';
+import { resolveGeminiApiKey } from '../../utils/geminiKey';
 import { stableTaskRowKey } from '../../utils/taskIds';
 
 export const OutputPage: React.FC = () => {
@@ -65,10 +66,7 @@ export const OutputPage: React.FC = () => {
   }, [employeeTasks])
 
   const handleAiReview = async () => {
-    const key =
-      apiKey ||
-      (import.meta.env.VITE_GEMINI_API_KEY as string | undefined) ||
-      ''
+    const key = resolveGeminiApiKey(apiKey)
     if (!key) {
       alert("Vui lòng mở tab \"Prompt AI\" và nhập API key (Google AI Studio).");
       return;
@@ -201,7 +199,7 @@ export const OutputPage: React.FC = () => {
                     title={
                       employeeTasks.length === 0
                         ? 'Chưa có task cho nhân viên này'
-                        : !(apiKey || import.meta.env.VITE_GEMINI_API_KEY)
+                        : !resolveGeminiApiKey(apiKey)
                           ? 'Nhập API key tại tab Prompt AI (Google AI Studio)'
                           : undefined
                     }
