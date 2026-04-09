@@ -4,11 +4,14 @@
 interface ImportMetaEnv {
   /** Build: vite.config define + VERCEL_GIT_COMMIT_SHA trên Vercel */
   readonly VITE_APP_GIT_SHA: string
-  readonly VITE_API_BASE_URL?: string
   readonly VITE_OPENAI_API_KEY?: string
   /** Key OpenAI chung khi không đặt VITE_OPENAI_API_KEY. */
   readonly VITE_AI_API_KEY?: string
   readonly VITE_AI_MODEL?: string
+  /**
+   * `true`/`1`: dùng system prompt rút gọn (ít token) — hữu ích khi 429 do TPM (tokens/phút) với tier thấp.
+   */
+  readonly VITE_AI_COMPACT_SYSTEM_PROMPT?: string
   /** Khoảng nghỉ giữa mỗi batch chấm AI (ms), giảm 429 RPM */
   readonly VITE_AI_CHUNK_GAP_MS?: string
   /** Nghỉ tối thiểu giữa mọi request OpenAI (ms). Ưu tiên hơn VITE_AI_CHUNK_GAP_MS nếu set. */

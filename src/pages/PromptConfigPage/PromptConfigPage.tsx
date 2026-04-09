@@ -1,14 +1,25 @@
 import {
     DEFAULT_AI_MODEL,
-    DEFAULT_AI_PROMPTS,
+    getResolvedDefaultAiPrompts,
 } from '@/constants/aiPromptDefaults'
 import { useTask } from '@/hooks/useTask'
+import { pingOpenAiConnection } from '@/services/AIService'
 import type { AiPromptConfig } from '@/types/aiPrompts'
 import {
     describeBuiltInLlmKeySource,
     hasBuiltInLlmKey,
+    isLlmConfigured,
+    resolveLlmApiKey,
+    sanitizeLlmEndpoint,
 } from '@/utils/llmKey'
-import { ExternalLink, Info, KeyRound, RotateCcw, Save } from 'lucide-react'
+import {
+    Activity,
+    ExternalLink,
+    Info,
+    KeyRound,
+    RotateCcw,
+    Save,
+} from 'lucide-react'
 import React, { useState } from 'react'
 
 const FIELD_META: { key: keyof AiPromptConfig; label: string; hint: string }[] =
@@ -49,6 +60,8 @@ export const PromptConfigPage: React.FC = () => {
   const {
     apiKey,
     setApiKey,
+    aiEndpoint,
+    setAiEndpoint,
     aiModel,
     setAiModel,
     aiPrompts,
@@ -56,10 +69,13 @@ export const PromptConfigPage: React.FC = () => {
   } = useTask()
   const [draft, setDraft] = useState<AiPromptConfig>(aiPrompts)
   const [modelDraft, setModelDraft] = useState(aiModel)
+  const [endpointDraft, setEndpointDraft] = useState(aiEndpoint)
   const [keyDraft, setKeyDraft] = useState(() =>
     hasBuiltInLlmKey() ? '' : apiKey,
   )
   const [savedAt, setSavedAt] = useState<string | null>(null)
+  const [pingLoading, setPingLoading] = useState(false)
+  const [pingMessage, setPingMessage] = useState<string | null>(null)
 
   const updateField = (key: keyof AiPromptConfig, value: string) => {
     setDraft((d) => ({ ...d, [key]: value }))
@@ -67,6 +83,7 @@ export const PromptConfigPage: React.FC = () => {
 
   const handleSave = () => {
     setAiPrompts(draft)
+    setAiEndpoint(endpointDraft)
     setAiModel(modelDraft.trim() || DEFAULT_AI_MODEL)
     if (!hasBuiltInLlmKey()) {
       setApiKey(keyDraft.trim())
@@ -75,8 +92,32 @@ export const PromptConfigPage: React.FC = () => {
   }
 
   const handleResetPrompts = () => {
-    setDraft(DEFAULT_AI_PROMPTS)
+    setDraft(getResolvedDefaultAiPrompts())
+    setEndpointDraft('')
     setModelDraft(DEFAULT_AI_MODEL)
+  }
+
+  const handlePingOpenAi = async () => {
+    setPingMessage(null)
+    if (!isLlmConfigured(hasBuiltInLlmKey() ? '' : keyDraft, endpointDraft)) {
+      setPingMessage(
+        'Thiếu API endpoint. Vui lòng nhập URL endpoint trước khi kiểm tra kết nối.',
+      )
+      return
+    }
+    const key = resolveLlmApiKey(keyDraft).trim()
+    const endpoint = sanitizeLlmEndpoint(endpointDraft)
+    setPingLoading(true)
+    try {
+      const r = await pingOpenAiConnection(key, endpoint, modelDraft)
+      if (r.ok) {
+        setPingMessage('Kết nối OK — API trả 200 với model hiện tại.')
+      } else {
+        setPingMessage(r.message)
+      }
+    } finally {
+      setPingLoading(false)
+    }
   }
 
   return (
@@ -91,8 +132,14 @@ export const PromptConfigPage: React.FC = () => {
             <span>OpenAI (ChatGPT API)</span>
           </div>
           <p className="mt-2 leading-relaxed">
-            Chấm điểm <strong>chỉ</strong> gọi <code className="rounded bg-white/80 px-1">https://api.openai.com/v1/chat/completions</code>{' '}
-            — không dùng Google Gemini. Model mặc định <code className="rounded bg-white/80 px-1">gpt-4o</code>. Tạo key tại{' '}
+            Gọi API kiểu OpenAI Chat Completions:{' '}
+            <code className="rounded bg-white/80 px-1 break-all">
+              {endpointDraft
+                ? `${sanitizeLlmEndpoint(endpointDraft)}/chat/completions`
+                : '(chưa nhập endpoint)'}
+            </code>{' '}
+            (lấy từ ô API endpoint bên dưới). Model mặc định{' '}
+            <code className="rounded bg-white/80 px-1">gpt-4o</code>. Cloud OpenAI: tạo key tại{' '}
             <a
               href="https://platform.openai.com/api-keys"
               target="_blank"
@@ -101,7 +148,7 @@ export const PromptConfigPage: React.FC = () => {
             >
               platform.openai.com
             </a>
-            , hoặc cấu hình{' '}
+            , hoặc cấu hình key build qua{' '}
             <code className="rounded bg-white/80 px-1">VITE_OPENAI_API_KEY</code> /{' '}
             <code className="rounded bg-white/80 px-1">VITE_AI_API_KEY</code> khi deploy.
             Nếu <strong>429</strong>: tăng <code className="rounded bg-white/80 px-1">VITE_AI_GLOBAL_GAP_MS</code> hoặc kiểm tra billing OpenAI.
@@ -169,6 +216,20 @@ export const PromptConfigPage: React.FC = () => {
         ) : null}
         <label className="block space-y-1">
           <span className="text-[10px] font-black uppercase text-slate-400">
+            API endpoint (bắt buộc)
+          </span>
+          <input
+            value={endpointDraft}
+            onChange={(e) => setEndpointDraft(e.target.value)}
+            placeholder="https://api.openai.com/v1 hoặc http://host/aicoding/v1"
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-slate-300"
+          />
+          <p className="text-xs text-slate-500">
+            Chỉ dùng endpoint nhập tại đây; app không đọc base URL API từ biến môi trường.
+          </p>
+        </label>
+        <label className="block space-y-1">
+          <span className="text-[10px] font-black uppercase text-slate-400">
             API key OpenAI (sk-…)
           </span>
           <input
@@ -201,6 +262,32 @@ export const PromptConfigPage: React.FC = () => {
             <code className="text-[10px]">VITE_AI_GLOBAL_GAP_MS</code>.
           </p>
         </label>
+
+        <div className="flex flex-col gap-2 border-t border-slate-100 pt-4">
+          <button
+            type="button"
+            disabled={pingLoading}
+            onClick={() => void handlePingOpenAi()}
+            className="inline-flex w-fit items-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-bold text-indigo-900 transition hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Activity className={`h-4 w-4 shrink-0 ${pingLoading ? 'animate-pulse' : ''}`} />
+            {pingLoading ? 'Đang gọi API…' : 'Kiểm tra kết nối OpenAI'}
+          </button>
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            Gửi một request tối thiểu (không dùng prompt chấm điểm). Dùng key trong ô trên hoặc key từ biến môi trường; model lấy theo ô Model ID.
+          </p>
+          {pingMessage ? (
+            <p
+              className={`rounded-xl px-3 py-2 text-xs font-medium leading-relaxed ${
+                pingMessage.startsWith('Kết nối OK')
+                  ? 'border border-emerald-200 bg-emerald-50 text-emerald-900'
+                  : 'border border-rose-200 bg-rose-50 text-rose-900'
+              }`}
+            >
+              {pingMessage}
+            </p>
+          ) : null}
+        </div>
       </div>
 
       <div className="space-y-6">

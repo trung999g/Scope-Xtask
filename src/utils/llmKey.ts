@@ -1,4 +1,8 @@
 import { DEFAULT_AI_MODEL } from '@/constants/aiPromptDefaults'
+import {
+    hasOpenAiEndpoint,
+    normalizeOpenAiEndpoint,
+} from '@/utils/openAiEndpoint'
 
 /**
  * Chỉ dùng OpenAI Chat Completions — không gọi Google Gemini.
@@ -22,12 +26,31 @@ export function isOpenAiModel(model: string): boolean {
 }
 
 /**
- * Model lưu trong UI/env có thể còn từ bản cũ (gemini-*). Luôn trả về id OpenAI hợp lệ.
+ * Model id gửi lên API. Với gateway OpenAI-compatible (base URL tùy chỉnh), giữ nguyên id
+ * (vd. MWG). Trên api.openai.com chỉ chấp nhận gpt-*, o1, o3, o4…
  */
-export function coerceOpenAiModelId(model: string): string {
+export function coerceOpenAiModelId(model: string, endpoint?: string): string {
   const m = model.trim()
-  if (m && isOpenAiModel(m)) return m
-  return DEFAULT_AI_MODEL
+  const lower = m.toLowerCase()
+  const hasEndpoint = hasOpenAiEndpoint(endpoint)
+
+  // localStorage/UI cũ có thể còn gemini-* — trên gateway nội bộ dùng VITE_AI_MODEL (vd. MWG).
+  if (lower.startsWith('gemini-')) {
+    if (hasEndpoint) {
+      const envM = envTrim(import.meta.env.VITE_AI_MODEL)
+      return envM || DEFAULT_AI_MODEL
+    }
+    return DEFAULT_AI_MODEL
+  }
+
+  if (hasEndpoint) {
+    if (m) return m
+    const envM = envTrim(import.meta.env.VITE_AI_MODEL)
+    return envM || DEFAULT_AI_MODEL
+  }
+
+  if (m) return m
+  return envTrim(import.meta.env.VITE_AI_MODEL) || DEFAULT_AI_MODEL
 }
 
 export function describeBuiltInLlmKeySource(): string | null {
@@ -47,6 +70,20 @@ export function resolveLlmApiKey(
   const shared = envTrim(import.meta.env.VITE_AI_API_KEY)
   if (shared) return shared
   return (userKey ?? '').trim()
+}
+
+/** Đủ điều kiện gọi LLM: bắt buộc có endpoint; key có thể rỗng với gateway nội bộ. */
+export function isLlmConfigured(
+  userKey: string | undefined,
+  endpoint: string | undefined,
+): boolean {
+  if (!hasOpenAiEndpoint(endpoint)) return false
+  if (resolveLlmApiKey(userKey)) return true
+  return true
+}
+
+export function sanitizeLlmEndpoint(endpoint: string | undefined): string {
+  return normalizeOpenAiEndpoint(endpoint)
 }
 
 export function hasBuiltInLlmKey(): boolean {

@@ -2,6 +2,7 @@ import { DEFAULT_AI_MODEL } from '@/constants/aiPromptDefaults'
 import {
     enqueueAiRequest,
     scoringQueueGapMs,
+    sleepOrAbort,
 } from '@/services/aiRequestGate'
 import type { SheetAiAuditRow } from '@/services/GoogleSheetService'
 import { GoogleSheetService } from '@/services/GoogleSheetService'
@@ -9,9 +10,22 @@ import type { Task, TaskType } from '@/types'
 import type { AiPromptConfig } from '@/types/aiPrompts'
 import { coerceOpenAiModelId } from '@/utils/llmKey'
 import {
+    getOpenAiChatCompletionsUrl,
+    hasOpenAiEndpoint,
+} from '@/utils/openAiEndpoint'
+import {
     auditPayloadId,
     normalizeXtaskId,
 } from '@/utils/taskIds'
+
+function openAiCompatHeaders(apiKey: string): HeadersInit {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  const t = apiKey.trim()
+  if (t) headers.Authorization = `Bearer ${t}`
+  return headers
+}
 
 const TASK_TYPES: TaskType[] = [
   'feature',
@@ -28,8 +42,8 @@ const TASK_TYPES: TaskType[] = [
  */
 function scoreMaxTasksPerBatch(): number {
   const raw = import.meta.env.VITE_AI_SCORE_CHUNK_SIZE
-  const n = raw !== undefined && raw !== '' ? parseInt(raw, 10) : 14
-  if (Number.isNaN(n) || n < 1) return 14
+  const n = raw !== undefined && raw !== '' ? parseInt(raw, 10) : 10
+  if (Number.isNaN(n) || n < 1) return 10
   return Math.min(50, n)
 }
 
@@ -69,8 +83,13 @@ function buildPayloadBatches(rows: SheetAiAuditRow[]): SheetAiAuditRow[][] {
   return batches
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+type OpenAiHttpError = Error & { status?: number; retryAfterMs?: number }
+
+function isAbortLike(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === 'AbortError') ||
+    (err instanceof Error && err.name === 'AbortError')
+  )
 }
 
 function getErrorStatus(err: unknown): number | undefined {
@@ -115,6 +134,12 @@ function isLikelyQuota429(err: unknown): boolean {
 }
 
 function retryDelayMs(err: unknown, attempt: number): number {
+  if (err && typeof err === 'object' && 'retryAfterMs' in err) {
+    const ms = (err as { retryAfterMs?: unknown }).retryAfterMs
+    if (typeof ms === 'number' && ms > 0) {
+      return Math.min(300_000, Math.ceil(ms) + Math.random() * 4000)
+    }
+  }
   const msg = err instanceof Error ? err.message : String(err)
   const m = msg.match(/retry in ([\d.]+)\s*s/i)
   if (m) {
@@ -129,33 +154,40 @@ function retryDelayMs(err: unknown, attempt: number): number {
     return Math.min(240_000, base + jitter)
   }
   if (isLikelyQuota429(err)) {
-    const base = 14_000 * 2 ** attempt
-    return Math.min(240_000, base + jitter)
+    const base = 22_000 * 2 ** attempt
+    return Math.min(300_000, base + jitter)
   }
   return Math.min(240_000, 9000 * (attempt + 1) + jitter)
 }
 
 const OPENAI_USER_JSON_HINT = `
 
-Trả về đúng một object JSON (không markdown) với khóa "results" là mảng các object theo hợp đồng đầu ra; mỗi phần tử phải khớp "id" trong PAYLOAD.`
+Trả về đúng một object JSON (không markdown) với khóa "results" là mảng; mỗi phần tử khớp "id" VÀ "msnv" từ đúng một dòng PAYLOAD (dữ liệu Google Sheet).`
 
 async function openAiChatWithRetry(
   apiKey: string,
+  endpoint: string,
   model: string,
   systemInstruction: string,
   userMessage: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const maxAttempts = 12
   let lastErr: unknown
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
+      if (signal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError')
+      }
+      const chatUrl = getOpenAiChatCompletionsUrl(endpoint)
+      if (!chatUrl) {
+        throw new Error('Thiếu API endpoint. Vào tab Prompt AI để nhập URL endpoint.')
+      }
       return await enqueueAiRequest(async () => {
-        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        const res = await fetch(chatUrl, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-          },
+          headers: openAiCompatHeaders(apiKey),
+          signal,
           body: JSON.stringify({
             model: model.trim() || 'gpt-4o',
             messages: [
@@ -167,11 +199,35 @@ async function openAiChatWithRetry(
             ],
             temperature: 0.2,
             response_format: { type: 'json_object' },
+            max_tokens: 8192,
           }),
         })
         const raw = await res.text()
         if (!res.ok) {
-          throw new Error(`OpenAI [${res.status}]: ${raw}`)
+          const err: OpenAiHttpError = new Error(
+            `OpenAI [${res.status}]: ${raw.length > 1200 ? `${raw.slice(0, 1200)}…` : raw}`,
+          )
+          err.status = res.status
+          const ra = res.headers.get('retry-after')
+          if (ra) {
+            const sec = parseFloat(ra)
+            if (!Number.isNaN(sec) && sec > 0) {
+              err.retryAfterMs = sec * 1000
+            }
+          }
+          try {
+            const j = JSON.parse(raw) as { error?: { message?: string } }
+            const tryIn = j.error?.message?.match(
+              /try again in ([\d.]+)\s*s/i,
+            )
+            if (tryIn) {
+              err.retryAfterMs =
+                Math.ceil(parseFloat(tryIn[1]) * 1000) + 2000
+            }
+          } catch {
+            /* ignore */
+          }
+          throw err
         }
         let data: unknown
         try {
@@ -186,8 +242,11 @@ async function openAiChatWithRetry(
           throw new Error('OpenAI: thiếu choices[0].message.content')
         }
         return content
-      }, scoringQueueGapMs())
+      }, scoringQueueGapMs(), signal)
     } catch (e) {
+      if (isAbortLike(e) || signal?.aborted) {
+        throw e instanceof Error ? e : new DOMException('Aborted', 'AbortError')
+      }
       lastErr = e
       if (!isRetriableApiError(e) || attempt === maxAttempts - 1) {
         if (isRetriableApiError(e)) {
@@ -207,7 +266,7 @@ async function openAiChatWithRetry(
         }
         throw e
       }
-      await sleep(retryDelayMs(e, attempt))
+      await sleepOrAbort(retryDelayMs(e, attempt), signal)
     }
   }
   throw lastErr instanceof Error
@@ -217,6 +276,7 @@ async function openAiChatWithRetry(
 
 type AiScoreEntry = {
   id: string
+  msnv?: string
   taskType?: string
   difficulty?: number
   finalScore?: number
@@ -292,11 +352,17 @@ ${prompts.jsonOutputContract}`
 }
 
 function buildUserPayloadMessage(payload: SheetAiAuditRow[]): string {
-  return `Trả về ĐÚNG một mảng JSON hợp lệ (application/json, không markdown), hoặc object { "results": [...] } nếu API bắt buộc (OpenAI).
+  return `Trả về ĐÚNG một mảng JSON hoặc object { "results": [...] } (OpenAI JSON mode).
 
-Với MỖI phần tử trong PAYLOAD bên dưới phải có ĐÚNG một object tương ứng trong mảng kết quả; trường "id" khớp từng phần tử (không thêm/bớt id).
+Mỗi object trong PAYLOAD là một dòng export Google Sheet: **id** (phiếu), **msnv** (mã nhân viên cột phụ trách). Với mỗi dòng PAYLOAD phải có ĐÚNG một kết quả có cùng **id** và cùng **msnv** (không đổi MSNV, không bớt dòng).
 
-PAYLOAD (lô hiện tại) — dữ liệu theo cột export Sheet:
+Dựa trên toàn bộ chữ trong PAYLOAD — gồm **title, desc, URL, mã ticket, tên trang tài liệu** xuất hiện trên phiếu. Được suy luận có kiểm soát từ **mô tả liên kết** (đường dẫn, project, epic) và **ngữ cảnh stack / vibe FE** để chấm đúng vai trò; **không** bịa chi tiết kỹ thuật không có manh mối trong các trường text này.
+
+Thiếu mô tả chi tiết, desc rỗng hoặc descIsOnlyTitle (trùng title): **vẫn phải** trả đủ id/msnv với difficulty, finalScore (tối thiểu 1 khi title thể hiện việc FE hợp lệ), status **VAGUE** hoặc OK — không dùng USELESS chỉ vì không có đoạn mô tả dài.
+
+**Mô tả mơ hồ** (chữ chung chung, không nêu màn/flow/hạng mục rõ): dùng **VAGUE**, chấm thận trọng theo rubric (thường điểm 1–2, difficulty 1–2; tối đa 3 nếu title+link/doc trong phiếu đủ gợi scope; không 4đ / không difficulty 4). **aiComment** phải nhắc mức mơ hồ.
+
+PAYLOAD (lô hiện tại):
 ${JSON.stringify(payload)}`
 }
 
@@ -305,8 +371,11 @@ function auditRowsFromTasksFallback(tasks: Task[]): SheetAiAuditRow[] {
   return tasks.map((t) => {
     const titleTrim = (t.title ?? '').trim()
     const descTrim = (t.description ?? '').trim()
+    const msnv = (t.assigneeId ?? '').trim()
     return {
       id: auditPayloadId(t),
+      msnv,
+      assigneeName: t.assigneeName || undefined,
       mainTaskId: t.mainTaskId,
       subTaskId: t.subTaskId,
       xtaskRole: t.xtaskRole,
@@ -328,13 +397,51 @@ function mergeAiOntoTask(task: Task, entry: AiScoreEntry | undefined): Task {
     }
   }
 
-  const difficulty = clampDifficulty(entry.difficulty)
   const taskType = normalizeTaskType(entry.taskType)
   const status = (entry.status ?? 'OK').toUpperCase()
 
+  const titleTrim = (task.title ?? '').trim()
+  const descTrim = (task.description ?? '').trim()
+  const thinDescription =
+    !descTrim || descTrim === titleTrim || titleTrim.length === 0
+
   let rawScore = clampScore(entry.finalScore)
-  if (status === 'FRAUD' || status === 'USELESS') {
+  let difficulty = clampDifficulty(entry.difficulty)
+  /** AI đôi khi trả USELESS/0 khi chỉ thiếu mô tả — hệ thống vẫn ghi nhận điểm tối thiểu từ title. */
+  let uselessBumpedToOne = false
+  /** VAGUE: trần điểm/difficulty; hoặc nâng sàn 0→1 khi title đủ ý (mô tả mỏng). */
+  let vagueCapped = false
+  let vagueFlooredToOne = false
+  if (status === 'FRAUD') {
     rawScore = 0
+  } else if (status === 'USELESS') {
+    rawScore = 0
+    if (thinDescription && titleTrim.length >= 5) {
+      rawScore = 1
+      uselessBumpedToOne = true
+    }
+  } else if (status === 'VAGUE') {
+    if (rawScore > 3) {
+      rawScore = 3
+      vagueCapped = true
+    }
+    if (thinDescription) {
+      if (rawScore > 2) {
+        rawScore = 2
+        vagueCapped = true
+      }
+      if (difficulty > 2) {
+        difficulty = 2
+        vagueCapped = true
+      }
+    } else if (difficulty > 3) {
+      difficulty = 3
+      vagueCapped = true
+    }
+    if (thinDescription && titleTrim.length >= 5 && rawScore < 1) {
+      rawScore = 1
+      vagueFlooredToOne = true
+    }
   }
 
   const finalScore = applyLatePenalty(rawScore, task.lateDays)
@@ -350,9 +457,16 @@ function mergeAiOntoTask(task: Task, entry: AiScoreEntry | undefined): Task {
   if (status === 'FRAUD') {
     notes = `${notes ? `${notes} | ` : ''}AI: FRAUD (0đ)`.trim()
   } else if (status === 'USELESS') {
-    notes = `${notes ? `${notes} | ` : ''}AI: USELESS (0đ)`.trim()
+    if (uselessBumpedToOne) {
+      notes = `${notes ? `${notes} | ` : ''}AI: nội dung mỏng — giữ 1đ theo title (thiếu mô tả chi tiết)`.trim()
+    } else {
+      notes = `${notes ? `${notes} | ` : ''}AI: USELESS (0đ)`.trim()
+    }
   } else if (status === 'VAGUE') {
-    notes = `${notes ? `${notes} | ` : ''}AI: mô tả mơ hồ`.trim()
+    const parts = ['mô tả mơ hồ']
+    if (vagueFlooredToOne) parts.push('tối thiểu 1đ theo title')
+    if (vagueCapped) parts.push('trần điểm/difficulty theo rubric')
+    notes = `${notes ? `${notes} | ` : ''}AI: ${parts.join(' — ')}`.trim()
   }
 
   return {
@@ -376,19 +490,37 @@ export const AIService = {
   async scoreTasksWithAI(
     tasks: Task[],
     apiKey: string,
+    endpoint: string,
     model: string,
     prompts: AiPromptConfig,
     options?: {
       sheetCsvText?: string
       blockedHashtags?: string[]
+      /** Hủy giữa các lô hoặc trong lúc gọi API — kết quả các lô đã xong vẫn được giữ. */
+      signal?: AbortSignal
+      /**
+       * Gọi sau mỗi lô chấm thành công — `scoredTasks` là toàn bộ `tasks` đầu vào
+       * với các phiếu đã có kết quả AI được merge; phiếu chưa tới lô giữ nguyên.
+       */
+      onBatchComplete?: (info: {
+        batchIndex: number
+        batchCount: number
+        scoredTasks: Task[]
+      }) => void
     },
   ): Promise<Task[]> {
-    if (!apiKey || tasks.length === 0) return tasks
+    if (tasks.length === 0) return tasks
+    const token = (apiKey ?? '').trim()
+    if (!hasOpenAiEndpoint(endpoint)) return tasks
 
-    const resolvedModel = coerceOpenAiModelId(model.trim() || DEFAULT_AI_MODEL)
+    const resolvedModel = coerceOpenAiModelId(
+      model.trim() || DEFAULT_AI_MODEL,
+      endpoint,
+    )
     const systemInstruction = buildSystemInstruction(prompts)
 
     const byId = new Map<string, AiScoreEntry>()
+    let abortedEarly = false
 
     const toScore = tasks.filter((t) => !t.isDuplicate)
     let payloads: SheetAiAuditRow[]
@@ -411,37 +543,14 @@ export const AIService = {
       userMessage: string,
     ): Promise<{ response: { text: () => string } }> => {
       const text = await openAiChatWithRetry(
-        apiKey,
+        token,
+        endpoint,
         resolvedModel,
         systemInstruction,
         userMessage,
+        options?.signal,
       )
       return { response: { text: () => text } }
-    }
-
-    const batches = buildPayloadBatches(payloads)
-    if (batches.length > 0) {
-      for (let idx = 0; idx < batches.length; idx++) {
-        const slice = batches[idx]
-        const userMessage = buildUserPayloadMessage(slice)
-        const result = await runOneChunk(userMessage)
-        const responseText = result.response.text()
-        let parsed: unknown[]
-        try {
-          parsed = parseResponseToArray(responseText)
-        } catch {
-          throw new Error(
-            `AI trả JSON không hợp lệ (lô ${idx + 1}/${batches.length}). Thử giảm VITE_AI_SCORE_CHUNK_SIZE / VITE_AI_SCORE_MAX_PAYLOAD_CHARS hoặc đổi model.`,
-          )
-        }
-        for (const row of parsed) {
-          const e = row as AiScoreEntry
-          if (e?.id == null || e.id === '') continue
-          const idNorm = normalizeXtaskId(String(e.id))
-          if (!idNorm) continue
-          byId.set(idNorm, { ...e, id: idNorm })
-        }
-      }
     }
 
     const lookupEntry = (t: Task): AiScoreEntry | undefined => {
@@ -461,9 +570,128 @@ export const AIService = {
       return undefined
     }
 
+    /** Chỉ merge các task đã có entry — không gắn “không trả kết quả” cho task chưa chấm. */
+    const mergeScoredSoFar = (): Task[] =>
+      tasks.map((t) => {
+        if (t.isDuplicate) return t
+        const entry = lookupEntry(t)
+        if (!entry) return t
+        return mergeAiOntoTask(t, entry)
+      })
+
+    const batches = buildPayloadBatches(payloads)
+    try {
+      if (batches.length > 0) {
+        for (let idx = 0; idx < batches.length; idx++) {
+          if (options?.signal?.aborted) {
+            abortedEarly = true
+            break
+          }
+          const slice = batches[idx]
+          const userMessage = buildUserPayloadMessage(slice)
+          const result = await runOneChunk(userMessage)
+          const responseText = result.response.text()
+          let parsed: unknown[]
+          try {
+            parsed = parseResponseToArray(responseText)
+          } catch {
+            throw new Error(
+              `AI trả JSON không hợp lệ (lô ${idx + 1}/${batches.length}). Thử giảm VITE_AI_SCORE_CHUNK_SIZE / VITE_AI_SCORE_MAX_PAYLOAD_CHARS hoặc đổi model.`,
+            )
+          }
+          for (const row of parsed) {
+            const e = row as AiScoreEntry
+            if (e?.id == null || e.id === '') continue
+            const idNorm = normalizeXtaskId(String(e.id))
+            if (!idNorm) continue
+            byId.set(idNorm, { ...e, id: idNorm })
+          }
+          options?.onBatchComplete?.({
+            batchIndex: idx,
+            batchCount: batches.length,
+            scoredTasks: mergeScoredSoFar(),
+          })
+        }
+      }
+    } catch (err) {
+      if (isAbortLike(err) || options?.signal?.aborted) {
+        abortedEarly = true
+      } else {
+        throw err
+      }
+    }
+
     return tasks.map((t) => {
       if (t.isDuplicate) return t
-      return mergeAiOntoTask(t, lookupEntry(t))
+      const entry = lookupEntry(t)
+      if (!entry && abortedEarly) return t
+      return mergeAiOntoTask(t, entry)
     })
   },
+}
+
+export type PingOpenAiResult =
+  | { ok: true }
+  | { ok: false; status?: number; message: string }
+
+/**
+ * Một request Chat Completions rất nhỏ — không qua hàng đợi chấm điểm (dùng để kiểm tra key/model).
+ */
+export async function pingOpenAiConnection(
+  apiKey: string,
+  endpoint: string,
+  model: string,
+  signal?: AbortSignal,
+): Promise<PingOpenAiResult> {
+  const key = apiKey.trim()
+  const chatUrl = getOpenAiChatCompletionsUrl(endpoint)
+  if (!chatUrl) {
+    return { ok: false, message: 'Thiếu API endpoint. Vui lòng nhập URL endpoint.' }
+  }
+  const m = coerceOpenAiModelId(model.trim() || DEFAULT_AI_MODEL, endpoint)
+  try {
+    const res = await fetch(chatUrl, {
+      method: 'POST',
+      headers: openAiCompatHeaders(key),
+      signal,
+      body: JSON.stringify({
+        model: m,
+        messages: [{ role: 'user', content: 'ping' }],
+        max_tokens: 4,
+        temperature: 0,
+      }),
+    })
+    const raw = await res.text()
+    if (!res.ok) {
+      let hint = raw
+      try {
+        const j = JSON.parse(raw) as { error?: { message?: string } }
+        if (j.error?.message) hint = j.error.message
+      } catch {
+        /* ignore */
+      }
+      const slice = hint.slice(0, 380)
+      if (res.status === 429) {
+        return {
+          ok: false,
+          status: 429,
+          message: `429 — rate limit / quota OpenAI. Gợi ý: đổi gpt-4o-mini, bật VITE_AI_COMPACT_SYSTEM_PROMPT, kiểm tra billing. Chi tiết: ${slice}`,
+        }
+      }
+      return {
+        ok: false,
+        status: res.status,
+        message: `[${res.status}] ${slice}`,
+      }
+    }
+    return { ok: true }
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      return { ok: false, message: 'Đã hủy.' }
+    }
+    return {
+      ok: false,
+      message: e instanceof Error ? e.message : String(e),
+    }
+  }
 }

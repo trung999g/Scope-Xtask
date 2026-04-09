@@ -1,6 +1,6 @@
 import {
   DEFAULT_AI_MODEL,
-  DEFAULT_AI_PROMPTS,
+  getResolvedDefaultAiPrompts,
 } from '@/constants/aiPromptDefaults'
 import { TaskContext } from '@/contexts/task-context'
 import { AIService } from '@/services/AIService'
@@ -10,6 +10,7 @@ import type { AiPromptConfig } from '@/types/aiPrompts'
 import {
   coerceOpenAiModelId,
   hasBuiltInLlmKey,
+  isLlmConfigured,
   resolveLlmApiKey,
 } from '@/utils/llmKey'
 import {
@@ -23,6 +24,7 @@ import {
 
 const LS_API = 'gemini_api_key'
 const LS_MODEL = 'xtask_ai_model_v1'
+const LS_ENDPOINT = 'xtask_ai_endpoint_v1'
 
 /** Key do người dùng/nhập tay (bổ sung khi không có VITE_* tương ứng model). */
 function readStoredUserApiKey(): string {
@@ -47,9 +49,17 @@ function readInitialModel(): string {
   }
 }
 
-/** Luôn rubric mặc định trong code; không merge/ghi localStorage (tránh tự đổi prompt cũ). */
+function readStoredEndpoint(): string {
+  try {
+    return (localStorage.getItem(LS_ENDPOINT) ?? '').trim()
+  } catch {
+    return ''
+  }
+}
+
+/** Rubric mặc định trong code (+ tùy chọn compact qua VITE_AI_COMPACT_SYSTEM_PROMPT). */
 function readInitialPrompts(): AiPromptConfig {
-  return DEFAULT_AI_PROMPTS
+  return getResolvedDefaultAiPrompts()
 }
 
 export function TaskProvider({ children }: { children: ReactNode }) {
@@ -60,6 +70,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
   )
   const [sheetUrl, setSheetUrl] = useState('')
   const [apiKey, setApiKey] = useState(readStoredUserApiKey)
+  const [aiEndpoint, setAiEndpointState] = useState(readStoredEndpoint)
 
   const [aiModel, setAiModelState] = useState(readInitialModel)
   const [aiPrompts, setAiPromptsState] = useState(readInitialPrompts)
@@ -71,20 +82,34 @@ export function TaskProvider({ children }: { children: ReactNode }) {
 
   const getLastSheetImport = useCallback(() => sheetImportRef.current, [])
 
-  const aiConfigRef = useRef({ apiKey, aiModel, aiPrompts })
+  const aiConfigRef = useRef({ apiKey, aiEndpoint, aiModel, aiPrompts })
   useEffect(() => {
-    aiConfigRef.current = { apiKey, aiModel, aiPrompts }
-  }, [apiKey, aiModel, aiPrompts])
+    aiConfigRef.current = { apiKey, aiEndpoint, aiModel, aiPrompts }
+  }, [apiKey, aiEndpoint, aiModel, aiPrompts])
+
+  const setAiEndpoint = useCallback((url: string) => {
+    const normalized = url.trim().replace(/\/+$/, '')
+    setAiEndpointState(normalized)
+    try {
+      if (normalized) localStorage.setItem(LS_ENDPOINT, normalized)
+      else localStorage.removeItem(LS_ENDPOINT)
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   const setAiModel = useCallback((m: string) => {
-    const coerced = coerceOpenAiModelId(m.trim() || DEFAULT_AI_MODEL)
+    const coerced = coerceOpenAiModelId(
+      m.trim() || DEFAULT_AI_MODEL,
+      aiEndpoint,
+    )
     setAiModelState(coerced)
     try {
       localStorage.setItem(LS_MODEL, coerced)
     } catch {
       /* ignore */
     }
-  }, [])
+  }, [aiEndpoint])
 
   const setAiPrompts = useCallback((p: AiPromptConfig) => {
     setAiPromptsState(p)
@@ -135,15 +160,26 @@ export function TaskProvider({ children }: { children: ReactNode }) {
         import.meta.env.VITE_AI_AUTO_SCORE === 'true' ||
         import.meta.env.VITE_AI_AUTO_SCORE === '1'
 
-      const { apiKey: keyFromState, aiModel: model, aiPrompts: prompts } =
+      const {
+        apiKey: keyFromState,
+        aiEndpoint: endpointFromState,
+        aiModel: model,
+        aiPrompts: prompts,
+      } =
         aiConfigRef.current
-        const key = resolveLlmApiKey(keyFromState)
-      if (!autoScore || !key || filteredTasks.length === 0) return
+      const key = resolveLlmApiKey(keyFromState)
+      if (
+        !autoScore ||
+        !isLlmConfigured(keyFromState, endpointFromState) ||
+        filteredTasks.length === 0
+      )
+        return
 
       try {
         const scored = await AIService.scoreTasksWithAI(
           filteredTasks,
           key,
+          endpointFromState,
           model,
           prompts,
           {
@@ -214,6 +250,8 @@ export function TaskProvider({ children }: { children: ReactNode }) {
       sheetUrl,
       apiKey,
       setApiKey,
+      aiEndpoint,
+      setAiEndpoint,
       aiModel,
       setAiModel,
       aiPrompts,
@@ -229,7 +267,9 @@ export function TaskProvider({ children }: { children: ReactNode }) {
       importTasksFromCsvText,
       sheetUrl,
       apiKey,
+      aiEndpoint,
       aiModel,
+      setAiEndpoint,
       setAiModel,
       aiPrompts,
       setAiPrompts,

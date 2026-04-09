@@ -9,15 +9,19 @@ const appGitSha =
   "local";
 
 // https://vitejs.dev/config/
-export default defineConfig({
-  plugins: [react()],
-  define: {
-    /** Dùng import.meta.env — Vite thay thế ổn định hơn biến global __APP_* */
-    "import.meta.env.VITE_APP_GIT_SHA": JSON.stringify(appGitSha),
-  },
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
+export default defineConfig(({ mode }) => {
+  void mode;
+
+  return {
+    plugins: [react()],
+    define: {
+      /** Dùng import.meta.env — Vite thay thế ổn định hơn biến global __APP_* */
+      "import.meta.env.VITE_APP_GIT_SHA": JSON.stringify(appGitSha),
     },
-  },
+    resolve: {
+      alias: {
+        "@": path.resolve(__dirname, "./src"),
+      },
+    },
+  };
 });

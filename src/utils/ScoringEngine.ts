@@ -1,4 +1,4 @@
-import { Task, TaskType } from "../types";
+import type { Task, TaskType } from "../types";
 
 export const KEYWORDS = {
   LEVEL_1: [

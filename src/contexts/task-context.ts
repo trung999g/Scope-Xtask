@@ -25,6 +25,8 @@ export interface TaskContextType {
   sheetUrl: string
   apiKey: string
   setApiKey: (key: string) => void
+  aiEndpoint: string
+  setAiEndpoint: (url: string) => void
   aiModel: string
   setAiModel: (m: string) => void
   aiPrompts: AiPromptConfig

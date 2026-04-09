@@ -1,17 +1,23 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { AlertCircle, Cpu, ExternalLink, Loader2, Sparkles, Trophy, UserCircle2 } from 'lucide-react';
-import React, { useMemo, useState } from 'react';
+import { AlertCircle, Cpu, ExternalLink, Loader2, Sparkles, StopCircle, Trophy, UserCircle2 } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useTask } from '../../hooks/useTask';
 import { AIService } from '../../services/AIService';
 import { GoogleSheetService } from '../../services/GoogleSheetService';
 import type { Task } from '../../types';
 import { ScoringEngine } from '../../utils/ScoringEngine';
-import { resolveLlmApiKey } from '../../utils/llmKey';
+import { isLlmConfigured, resolveLlmApiKey } from '../../utils/llmKey';
 import { stableTaskRowKey } from '../../utils/taskIds';
 
 export const OutputPage: React.FC = () => {
-  const { employees, selectedEmployeeId, setSelectedEmployeeId, tasks, setTasks, apiKey, aiModel, aiPrompts, getLastSheetImport } = useTask();
+  const { employees, selectedEmployeeId, setSelectedEmployeeId, tasks, setTasks, apiKey, aiEndpoint, aiModel, aiPrompts, getLastSheetImport } = useTask();
   const [isAiLoading, setIsAiLoading] = useState(false);
+  /** Tiến trình từng lô chấm AI — cập nhật bảng ngay khi mỗi lô xong. */
+  const [aiBatchProgress, setAiBatchProgress] = useState<string | null>(null);
+  /** Khóa stableTaskRowKey — chỉ chấm AI các task được tick (giảm số lần gọi API, hạn 429). */
+  const [selectedForAiKeys, setSelectedForAiKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
 
   const currentEmployee = useMemo(() => 
     employees.find(e => e.id === selectedEmployeeId), 
@@ -20,6 +26,70 @@ export const OutputPage: React.FC = () => {
   const employeeTasks = useMemo(() => 
     tasks.filter(t => t.assigneeId === selectedEmployeeId),
   [tasks, selectedEmployeeId]);
+
+  const scorableEmployeeTasks = useMemo(
+    () => employeeTasks.filter((t) => !t.isDuplicate),
+    [employeeTasks],
+  );
+
+  const lastAiEmployeeIdRef = useRef<string | null>(null)
+  const aiAbortControllerRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!selectedEmployeeId) {
+      setSelectedForAiKeys(new Set())
+      lastAiEmployeeIdRef.current = null
+      return
+    }
+    const eligibleKeys = new Set(
+      scorableEmployeeTasks.map((t) => stableTaskRowKey(t)),
+    )
+    if (lastAiEmployeeIdRef.current !== selectedEmployeeId) {
+      lastAiEmployeeIdRef.current = selectedEmployeeId
+      setSelectedForAiKeys(eligibleKeys)
+      return
+    }
+    setSelectedForAiKeys((prev) => {
+      const next = new Set<string>()
+      for (const k of prev) {
+        if (eligibleKeys.has(k)) next.add(k)
+      }
+      return next
+    })
+  }, [selectedEmployeeId, scorableEmployeeTasks])
+
+  const allScorableSelected =
+    scorableEmployeeTasks.length > 0 &&
+    scorableEmployeeTasks.every((t) =>
+      selectedForAiKeys.has(stableTaskRowKey(t)),
+    )
+
+  const someScorableSelected = scorableEmployeeTasks.some((t) =>
+    selectedForAiKeys.has(stableTaskRowKey(t)),
+  )
+
+  const toggleSelectAllAi = () => {
+    const keys = scorableEmployeeTasks.map((t) => stableTaskRowKey(t))
+    setSelectedForAiKeys((prev) => {
+      const everyOn =
+        keys.length > 0 && keys.every((k) => prev.has(k))
+      if (everyOn) return new Set()
+      return new Set(keys)
+    })
+  }
+
+  const toggleOneAi = (rowKey: string) => {
+    setSelectedForAiKeys((prev) => {
+      const next = new Set(prev)
+      if (next.has(rowKey)) next.delete(rowKey)
+      else next.add(rowKey)
+      return next
+    })
+  }
+
+  const selectedForAiCount = scorableEmployeeTasks.filter((t) =>
+    selectedForAiKeys.has(stableTaskRowKey(t)),
+  ).length
 
   const totalMonthlyScore = useMemo(() => 
     ScoringEngine.calculateMonthlyTotal(employeeTasks), 
@@ -66,14 +136,25 @@ export const OutputPage: React.FC = () => {
   }, [employeeTasks])
 
   const handleAiReview = async () => {
-    const key = resolveLlmApiKey(apiKey)
-    if (!key) {
+    if (!isLlmConfigured(apiKey, aiEndpoint)) {
       alert(
-        'Vui lòng mở tab "Prompt AI" và nhập API key OpenAI (sk-…), hoặc cấu hình VITE_OPENAI_API_KEY / VITE_AI_API_KEY.',
+        'Vui lòng mở tab "Prompt AI" và nhập API endpoint. API key là tùy chọn nếu gateway không cần Bearer.',
       );
       return;
     }
+    const key = resolveLlmApiKey(apiKey)
     if (employeeTasks.length === 0) return;
+
+    const toScore = employeeTasks.filter(
+      (t) =>
+        !t.isDuplicate && selectedForAiKeys.has(stableTaskRowKey(t)),
+    )
+    if (toScore.length === 0) {
+      alert(
+        'Chọn ít nhất một task (ô AI) để chấm. Task trùng/đã chặn không thể chấm AI.',
+      )
+      return
+    }
 
     const sheetSnap = getLastSheetImport()
     if (!sheetSnap?.csvText) {
@@ -83,20 +164,38 @@ export const OutputPage: React.FC = () => {
       return;
     }
 
+    aiAbortControllerRef.current?.abort()
+    const ac = new AbortController()
+    aiAbortControllerRef.current = ac
+
     setIsAiLoading(true);
+    setAiBatchProgress('Đang chấm…');
     try {
       /** Nhiều lô + retry + gap — không cắt timeout cứng (tránh lỗi giả khi NV có >50 phiếu). */
       const scoredSubset = await AIService.scoreTasksWithAI(
-        employeeTasks,
+        toScore,
         key,
+        aiEndpoint,
         aiModel,
         aiPrompts,
         {
           sheetCsvText: sheetSnap.csvText,
           blockedHashtags: sheetSnap.blockedHashtags,
+          signal: ac.signal,
+          onBatchComplete: ({ batchIndex, batchCount, scoredTasks }) => {
+            setAiBatchProgress(
+              `Lô ${batchIndex + 1}/${batchCount} xong — đã cập nhật kết quả trên bảng`,
+            )
+            const byRow = new Map<string, Task>(
+              scoredTasks.map((t) => [stableTaskRowKey(t), t]),
+            )
+            setTasks((prev: Task[]) =>
+              prev.map((t) => byRow.get(stableTaskRowKey(t)) ?? t),
+            )
+          },
         },
       )
-      // Ghép theo main+sub để khớp sheet; chỉ subTaskId dễ trùng hoặc lệch với id AI.
+      // Ghép lần cuối (phiếu thiếu entry AI được gắn nhắc; hủy sớm giữ partial đã merge).
       const byRow = new Map<string, Task>(
         scoredSubset.map((t) => [stableTaskRowKey(t), t]),
       )
@@ -104,13 +203,19 @@ export const OutputPage: React.FC = () => {
         prev.map((t) => byRow.get(stableTaskRowKey(t)) ?? t),
       )
     } catch (error) {
-      console.error("AI Review Error:", error)
-      alert(
-        error instanceof Error
-          ? error.message
-          : 'Chấm AI thất bại. Xem console để biết chi tiết.',
-      )
+      const aborted =
+        error instanceof DOMException && error.name === 'AbortError'
+      if (!aborted) {
+        console.error('AI Review Error:', error)
+        alert(
+          error instanceof Error
+            ? error.message
+            : 'Chấm AI thất bại. Xem console để biết chi tiết.',
+        )
+      }
     } finally {
+      aiAbortControllerRef.current = null
+      setAiBatchProgress(null);
       setIsAiLoading(false);
     }
   };
@@ -186,47 +291,132 @@ export const OutputPage: React.FC = () => {
                 </div>
               </div>
 
+              <p className="text-[10px] text-slate-600 leading-relaxed rounded-xl border border-indigo-100 bg-indigo-50/60 px-3 py-2.5">
+                <span className="font-black text-indigo-900">Lưu ý:</span> Cột{' '}
+                <strong>Nhận xét AI</strong> chứa lời nhận xét/chất lượng mô tả từ model; cột{' '}
+                <strong>Điểm</strong> và tổng hợp{' '}
+                <strong>theo số điểm AI chấm</strong> (loại, độ khó, trừ muộn). Cột{' '}
+                <strong>Ghi chú</strong> là cờ hệ thống / sheet (trùng, FRAUD, …).                 Chưa chấm
+                AI thì Nhận xét AI trống và Điểm theo luật trên dữ liệu import. Thiếu mô tả
+                nhưng title còn ý: hệ thống vẫn ghi nhận điểm AI (tối thiểu 1 nếu model trả USELESS
+                chỉ vì nội dung mỏng).
+              </p>
+
               {/* Task Table */}
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden text-slate-900">
-                <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                  <h4 className="font-black text-xs uppercase tracking-widest text-slate-400">
-                    BÁO CÁO CHI TIẾT: {currentEmployee?.name} • {employeeTasks.length} TASK
-                  </h4>
+                <div className="p-4 border-b border-slate-100 flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center bg-slate-50/50">
+                  <div>
+                    <h4 className="font-black text-xs uppercase tracking-widest text-slate-400">
+                      BÁO CÁO CHI TIẾT: {currentEmployee?.name} • {employeeTasks.length} TASK
+                    </h4>
+                    <p className="mt-1 text-[10px] font-medium text-slate-500">
+                      Chấm AI: đã chọn{' '}
+                      <strong className="text-indigo-700">
+                        {selectedForAiCount}/{scorableEmployeeTasks.length}
+                      </strong>{' '}
+                      phiếu (bỏ qua trùng hashtag / duplicate).
+                    </p>
+                    {isAiLoading && aiBatchProgress ? (
+                      <p className="mt-1.5 text-[10px] font-bold text-indigo-600 leading-snug">
+                        {aiBatchProgress}
+                      </p>
+                    ) : null}
+                  </div>
                   
-                  <button
-                    type="button"
-                    onClick={handleAiReview}
-                    disabled={isAiLoading || employeeTasks.length === 0}
-                    title={
-                      employeeTasks.length === 0
-                        ? 'Chưa có task cho nhân viên này'
-                        : !resolveLlmApiKey(apiKey)
-                          ? 'Nhập API key OpenAI tại tab Prompt AI (hoặc env VITE_OPENAI_API_KEY)'
-                          : undefined
-                    }
-                    className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-indigo-100 disabled:opacity-50"
-                  >
-                    {isAiLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
-                    {isAiLoading ? 'AI đang chấm điểm...' : 'Chấm AI (NV hiện tại)'}
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {isAiLoading ? (
+                      <button
+                        type="button"
+                        onClick={() => aiAbortControllerRef.current?.abort()}
+                        className="flex items-center gap-2 px-3 py-1.5 border-2 border-rose-300 bg-rose-50 text-rose-800 hover:bg-rose-100 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all"
+                        title="Dừng sau lô hiện tại hoặc hủy request đang chạy; các phiếu đã chấm được giữ"
+                      >
+                        <StopCircle size={12} />
+                        Hủy chấm
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={handleAiReview}
+                      disabled={
+                        isAiLoading ||
+                        employeeTasks.length === 0 ||
+                        selectedForAiCount === 0 ||
+                        !isLlmConfigured(apiKey, aiEndpoint)
+                      }
+                      title={
+                        employeeTasks.length === 0
+                          ? 'Chưa có task cho nhân viên này'
+                          : selectedForAiCount === 0
+                            ? 'Tick chọn ít nhất một task ở cột AI'
+                          : !isLlmConfigured(apiKey, aiEndpoint)
+                            ? 'Cấu hình API endpoint tại tab Prompt AI'
+                            : undefined
+                      }
+                      className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-[10px] font-black uppercase tracking-widest transition-all shadow-lg shadow-indigo-100 disabled:opacity-50"
+                    >
+                      {isAiLoading ? <Loader2 size={12} className="animate-spin" /> : <Sparkles size={12} />}
+                      {isAiLoading
+                        ? 'Đang chấm…'
+                        : `Chấm AI (${selectedForAiCount} phiếu)`}
                   </button>
+                  </div>
                 </div>
                 
                 <div className="overflow-x-auto overflow-y-auto max-h-[600px] custom-scrollbar">
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-50/50 border-b border-slate-100">
+                        <th className="px-2 py-4 w-11 text-center border-r border-slate-100">
+                          <span className="sr-only">Chọn chấm AI</span>
+                          <input
+                            type="checkbox"
+                            className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            checked={allScorableSelected}
+                            ref={(el) => {
+                              if (el) {
+                                el.indeterminate =
+                                  someScorableSelected && !allScorableSelected
+                              }
+                            }}
+                            disabled={scorableEmployeeTasks.length === 0}
+                            onChange={toggleSelectAllAi}
+                            title="Chọn / bỏ chọn tất cả phiếu được phép chấm AI"
+                          />
+                        </th>
                         <th className="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center w-24">Phân loại</th>
                         <th className="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center w-28">Chính / Phụ</th>
                         <th className="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest min-w-[200px]">Nội dung & Xtask</th>
                         <th className="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center w-20">Độ khó</th>
-                        <th className="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest min-w-[150px]">Ghi chú</th>
-                        <th className="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center w-20">Điểm</th>
+                        <th className="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest min-w-[120px]">
+                          Ghi chú
+                        </th>
+                        <th
+                          className="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest min-w-[200px]"
+                          title="Nhận xét và chất lượng mô tả do model trả về khi chấm AI"
+                        >
+                          <span className="block">Nhận xét AI</span>
+                          <span className="mt-1 block text-[8px] font-bold normal-case tracking-normal text-indigo-600">
+                            (chấm AI)
+                          </span>
+                        </th>
+                        <th
+                          className="px-5 py-4 text-[10px] font-black text-slate-400 uppercase tracking-widest text-center w-24"
+                          title="Điểm hiển thị theo kết quả chấm AI (và trừ muộn), không phải điểm thủ công trên sheet"
+                        >
+                          <span className="block">Điểm</span>
+                          <span className="mt-1 block text-[8px] font-bold normal-case tracking-normal text-indigo-600">
+                            (theo AI)
+                          </span>
+                        </th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {employeeTasks.map((task, idx) => {
                         const isNumericId = /^\d+$/.test(task.mainTaskId);
                         const taskUrl = isNumericId ? GoogleSheetService.getTaskUrl(task.mainTaskId, task.subTaskId) : null;
+                        const rowKey = stableTaskRowKey(task);
+                        const canAiScore = !task.isDuplicate;
                         
                         return (
                           <tr 
@@ -239,6 +429,20 @@ export const OutputPage: React.FC = () => {
                                   : ''
                             }`}
                           >
+                            <td className="px-2 py-4 text-center border-r border-slate-50 align-middle">
+                              <input
+                                type="checkbox"
+                                className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 disabled:opacity-30"
+                                checked={canAiScore && selectedForAiKeys.has(rowKey)}
+                                disabled={!canAiScore}
+                                onChange={() => toggleOneAi(rowKey)}
+                                title={
+                                  canAiScore
+                                    ? 'Gửi phiếu này khi bấm Chấm AI'
+                                    : 'Không chấm AI (trùng / chặn)'
+                                }
+                              />
+                            </td>
                             <td className="px-5 py-4 text-center">
                               <div className="flex flex-col items-center gap-1">
                                 {taskUrl ? (
@@ -285,24 +489,6 @@ export const OutputPage: React.FC = () => {
                                   <p className="text-[10px] text-slate-400 font-medium whitespace-pre-wrap break-words italic leading-relaxed" title={task.description}>
                                     {task.description || "—"}
                                   </p>
-                                   {task.aiComment && (
-                                     <div className={`flex w-full mt-1 flex-col sm:flex-row sm:items-center gap-2 px-3 py-2 rounded-lg border shadow-sm animate-in slide-in-from-left-2 duration-300 ${task.isAiFraud ? 'bg-red-50 text-red-700 border-red-200 shadow-red-100' : 'bg-indigo-50/80 text-indigo-700 border-indigo-100'}`}>
-                                        <div className="flex items-center gap-1.5 flex-1">
-                                          {task.isAiFraud ? <AlertCircle size={14} className="shrink-0 text-red-600" /> : <Cpu size={14} className="shrink-0" />}
-                                          <span className="text-[11px] font-bold italic leading-relaxed">
-                                            {task.isAiFraud ? <span className="font-black text-red-600 uppercase tracking-tight">🚨 Cảnh báo Gian lận: </span> : <span>Nhận xét AI: </span>}
-                                            {task.aiComment}
-                                          </span>
-                                        </div>
-                                        {task.aiQualityScore !== undefined && (
-                                          <div className="shrink-0 inline-flex items-center">
-                                            <span className={`text-[9px] sm:text-[10px] font-black text-white px-2 py-0.5 rounded-full shadow-sm ${task.isAiFraud ? 'bg-red-600 shadow-red-200' : 'bg-indigo-600 shadow-indigo-200'}`}>
-                                              Chất lượng: {task.aiQualityScore}/4đ
-                                            </span>
-                                          </div>
-                                        )}
-                                     </div>
-                                   )}
                                 </div>
                               </div>
                             </td>
@@ -315,7 +501,45 @@ export const OutputPage: React.FC = () => {
                               {task.notes ? (
                                 <div className="flex items-center gap-1.5 text-red-500 bg-red-50 px-2 py-1 rounded-lg border border-red-100">
                                   <AlertCircle size={12} className="shrink-0" />
-                                  <span className="text-[10px] font-bold leading-none">{task.notes}</span>
+                                  <span className="text-[10px] font-bold leading-snug">{task.notes}</span>
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-slate-300 font-bold italic">—</span>
+                              )}
+                            </td>
+                            <td className="px-5 py-4 align-top border-l border-slate-100">
+                              {task.aiComment ? (
+                                <div
+                                  className={`flex flex-col gap-2 px-3 py-2 rounded-lg border shadow-sm ${
+                                    task.isAiFraud
+                                      ? 'bg-red-50 text-red-800 border-red-200'
+                                      : 'bg-indigo-50/90 text-indigo-900 border-indigo-100'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-1.5">
+                                    {task.isAiFraud ? (
+                                      <AlertCircle size={14} className="shrink-0 text-red-600 mt-0.5" />
+                                    ) : (
+                                      <Cpu size={14} className="shrink-0 text-indigo-600 mt-0.5" />
+                                    )}
+                                    <span className="text-[11px] font-semibold leading-relaxed whitespace-pre-wrap break-words">
+                                      {task.isAiFraud ? (
+                                        <span className="font-black text-red-600 uppercase tracking-tight">
+                                          Gian lận:{' '}
+                                        </span>
+                                      ) : null}
+                                      {task.aiComment}
+                                    </span>
+                                  </div>
+                                  {task.aiQualityScore !== undefined ? (
+                                    <span
+                                      className={`self-start text-[9px] font-black text-white px-2 py-0.5 rounded-full ${
+                                        task.isAiFraud ? 'bg-red-600' : 'bg-indigo-600'
+                                      }`}
+                                    >
+                                      Chất lượng mô tả: {task.aiQualityScore}/4
+                                    </span>
+                                  ) : null}
                                 </div>
                               ) : (
                                 <span className="text-[10px] text-slate-300 font-bold italic">—</span>

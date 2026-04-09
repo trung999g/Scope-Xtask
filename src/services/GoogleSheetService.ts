@@ -7,6 +7,10 @@ import { auditPayloadId, normalizeXtaskId, stableTaskRowKey } from "../utils/tas
  */
 export type SheetAiAuditRow = {
   id: string;
+  /** MSNV — mã số nhân viên từ cột D (số đầu dòng, đồng bộ filter danh sách NV). */
+  msnv: string;
+  /** Tên hiển thị sau MSNV trong cột D (nếu có). */
+  assigneeName?: string;
   mainTaskId: string;
   subTaskId: string;
   xtaskRole: XtaskRole;
@@ -112,6 +116,8 @@ export const GoogleSheetService = {
             const descTrim = task.description.trim();
             const audit: SheetAiAuditRow = {
               id: auditPayloadId(task),
+              msnv: assigneeId,
+              assigneeName: assigneeName || undefined,
               mainTaskId: task.mainTaskId,
               subTaskId: task.subTaskId,
               xtaskRole,
