@@ -70,9 +70,7 @@ export const PromptConfigPage: React.FC = () => {
   const [draft, setDraft] = useState<AiPromptConfig>(aiPrompts)
   const [modelDraft, setModelDraft] = useState(aiModel)
   const [endpointDraft, setEndpointDraft] = useState(aiEndpoint)
-  const [keyDraft, setKeyDraft] = useState(() =>
-    hasBuiltInLlmKey() ? '' : apiKey,
-  )
+  const [keyDraft, setKeyDraft] = useState(() => apiKey)
   const [savedAt, setSavedAt] = useState<string | null>(null)
   const [pingLoading, setPingLoading] = useState(false)
   const [pingMessage, setPingMessage] = useState<string | null>(null)
@@ -85,9 +83,7 @@ export const PromptConfigPage: React.FC = () => {
     setAiPrompts(draft)
     setAiEndpoint(endpointDraft)
     setAiModel(modelDraft.trim() || DEFAULT_AI_MODEL)
-    if (!hasBuiltInLlmKey()) {
-      setApiKey(keyDraft.trim())
-    }
+    setApiKey(keyDraft.trim())
     setSavedAt(new Date().toLocaleTimeString('vi-VN'))
   }
 
@@ -99,7 +95,7 @@ export const PromptConfigPage: React.FC = () => {
 
   const handlePingOpenAi = async () => {
     setPingMessage(null)
-    if (!isLlmConfigured(hasBuiltInLlmKey() ? '' : keyDraft, endpointDraft)) {
+    if (!isLlmConfigured(keyDraft, endpointDraft)) {
       setPingMessage(
         'Thiếu API endpoint. Vui lòng nhập URL endpoint trước khi kiểm tra kết nối.',
       )
@@ -148,9 +144,10 @@ export const PromptConfigPage: React.FC = () => {
             >
               platform.openai.com
             </a>
-            , hoặc cấu hình key build qua{' '}
+            , hoặc cấu hình key mặc định khi deploy qua{' '}
             <code className="rounded bg-white/80 px-1">VITE_OPENAI_API_KEY</code> /{' '}
-            <code className="rounded bg-white/80 px-1">VITE_AI_API_KEY</code> khi deploy.
+            <code className="rounded bg-white/80 px-1">VITE_AI_API_KEY</code> (ô key bên dưới để trống).
+            Có thể nhập key tại đây để <strong>ghi đè</strong> key build.
             Nếu <strong>429</strong>: tăng <code className="rounded bg-white/80 px-1">VITE_AI_GLOBAL_GAP_MS</code> hoặc kiểm tra billing OpenAI.
           </p>
         </div>
@@ -207,11 +204,13 @@ export const PromptConfigPage: React.FC = () => {
         </h3>
         {hasBuiltInLlmKey() ? (
           <p className="rounded-xl border border-emerald-200 bg-emerald-50/90 px-4 py-3 text-xs font-medium text-emerald-900 leading-relaxed">
-            Đang lấy key từ biến môi trường build (
+            Mặc định: key từ biến môi trường build (
             <code className="rounded bg-white/80 px-1">
               {describeBuiltInLlmKeySource() ?? 'env'}
             </code>
-            ) — không cần dán key vào ô dưới.
+            ). Để trống ô API key bên dưới để dùng mặc định; nhập{' '}
+            <code className="rounded bg-white/80 px-1">sk-…</code> nếu muốn dùng key riêng (ghi đè tạm cho phiên
+            này, đã lưu sẽ giữ trong trình duyệt).
           </p>
         ) : null}
         <label className="block space-y-1">
@@ -239,11 +238,10 @@ export const PromptConfigPage: React.FC = () => {
             onChange={(e) => setKeyDraft(e.target.value)}
             placeholder={
               hasBuiltInLlmKey()
-                ? 'Bỏ trống — đã có key dự án'
-                : 'sk-...'
+                ? 'Để trống = key mặc định (env); hoặc sk-…'
+                : 'sk-… hoặc để trống nếu đã cấu hình VITE_OPENAI_API_KEY / VITE_AI_API_KEY'
             }
-            disabled={hasBuiltInLlmKey()}
-            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-slate-300 disabled:cursor-not-allowed disabled:opacity-60"
+            className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-mono text-sm outline-none focus:ring-2 focus:ring-slate-300"
           />
         </label>
         <label className="block space-y-1">

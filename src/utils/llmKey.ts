@@ -7,7 +7,7 @@ import {
 /**
  * Chỉ dùng OpenAI Chat Completions — không gọi Google Gemini.
  *
- * Key: VITE_OPENAI_API_KEY → VITE_AI_API_KEY → key nhập tay (tab Prompt / localStorage).
+ * Key: key nhập tay (tab Prompt / localStorage) nếu không rỗng → VITE_OPENAI_API_KEY → VITE_AI_API_KEY.
  */
 
 function envTrim(key: string | undefined): string {
@@ -65,11 +65,11 @@ export function resolveLlmApiKey(
   _model?: string,
 ): string {
   void _model
+  const u = (userKey ?? '').trim()
+  if (u) return u
   const o = envTrim(import.meta.env.VITE_OPENAI_API_KEY)
   if (o) return o
-  const shared = envTrim(import.meta.env.VITE_AI_API_KEY)
-  if (shared) return shared
-  return (userKey ?? '').trim()
+  return envTrim(import.meta.env.VITE_AI_API_KEY)
 }
 
 /** Đủ điều kiện gọi LLM: bắt buộc có endpoint; key có thể rỗng với gateway nội bộ. */

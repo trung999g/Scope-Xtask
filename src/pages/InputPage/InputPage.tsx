@@ -112,7 +112,7 @@ export const InputPage: React.FC = () => {
                   <div className="flex items-center gap-2 text-[10px] text-indigo-500 font-bold bg-white/50 p-2 rounded-lg border border-indigo-50">
                      <Info size={12} />
                      <span>
-                       Tab Prompt AI: key OpenAI (<code className="text-[9px]">sk-…</code>) hoặc env{' '}
+                       Tab Prompt AI: nhập <code className="text-[9px]">sk-…</code> (ghi đè) hoặc để trống để dùng env{' '}
                        <code className="text-[9px]">VITE_OPENAI_API_KEY</code> /{' '}
                        <code className="text-[9px]">VITE_AI_API_KEY</code>; model mặc định{' '}
                        <code className="text-[9px]">gpt-4o</code>. Sau khi import → tab Kết quả → <strong>Chấm AI</strong>.

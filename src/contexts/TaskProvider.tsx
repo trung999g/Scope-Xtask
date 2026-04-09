@@ -1,6 +1,6 @@
 import {
-  DEFAULT_AI_MODEL,
-  getResolvedDefaultAiPrompts,
+    DEFAULT_AI_MODEL,
+    getResolvedDefaultAiPrompts,
 } from '@/constants/aiPromptDefaults'
 import { TaskContext } from '@/contexts/task-context'
 import { AIService } from '@/services/AIService'
@@ -8,18 +8,17 @@ import { GoogleSheetService } from '@/services/GoogleSheetService'
 import type { Employee, Task } from '@/types'
 import type { AiPromptConfig } from '@/types/aiPrompts'
 import {
-  coerceOpenAiModelId,
-  hasBuiltInLlmKey,
-  isLlmConfigured,
-  resolveLlmApiKey,
+    coerceOpenAiModelId,
+    isLlmConfigured,
+    resolveLlmApiKey,
 } from '@/utils/llmKey'
 import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
+    useCallback,
+    useEffect,
+    useMemo,
+    useRef,
+    useState,
+    type ReactNode,
 } from 'react'
 
 const LS_API = 'gemini_api_key'
@@ -116,13 +115,11 @@ export function TaskProvider({ children }: { children: ReactNode }) {
   }, [])
 
   useEffect(() => {
-    if (hasBuiltInLlmKey()) return
-    if (apiKey) {
-      try {
-        localStorage.setItem(LS_API, apiKey)
-      } catch {
-        /* ignore */
-      }
+    try {
+      if (apiKey.trim()) localStorage.setItem(LS_API, apiKey)
+      else localStorage.removeItem(LS_API)
+    } catch {
+      /* ignore */
     }
   }, [apiKey])
 
