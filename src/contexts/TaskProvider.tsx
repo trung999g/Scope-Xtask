@@ -1,6 +1,6 @@
 import {
-    DEFAULT_AI_MODEL,
-    getResolvedDefaultAiPrompts,
+  DEFAULT_AI_MODEL,
+  getResolvedDefaultAiPrompts,
 } from '@/constants/aiPromptDefaults'
 import { TaskContext } from '@/contexts/task-context'
 import { AIService } from '@/services/AIService'
@@ -8,17 +8,17 @@ import { GoogleSheetService } from '@/services/GoogleSheetService'
 import type { Employee, Task } from '@/types'
 import type { AiPromptConfig } from '@/types/aiPrompts'
 import {
-    coerceOpenAiModelId,
-    isLlmConfigured,
-    resolveLlmApiKey,
+  coerceOpenAiModelId,
+  isLlmConfigured,
+  resolveLlmApiKey,
 } from '@/utils/llmKey'
 import {
-    useCallback,
-    useEffect,
-    useMemo,
-    useRef,
-    useState,
-    type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
 } from 'react'
 
 const LS_API = 'gemini_api_key'
@@ -54,6 +54,34 @@ function readStoredEndpoint(): string {
   } catch {
     return ''
   }
+}
+
+function toGoogleCsvUrl(inputUrl: string): string {
+  const trimmed = inputUrl.trim()
+  try {
+    const parsed = new URL(trimmed)
+    parsed.hash = ''
+    if (
+      parsed.hostname.includes('docs.google.com') &&
+      parsed.pathname.includes('/spreadsheets/d/')
+    ) {
+      if (parsed.pathname.endsWith('/edit')) {
+        parsed.pathname = parsed.pathname.replace(/\/edit$/, '/export')
+      }
+      parsed.searchParams.set('format', 'csv')
+      return parsed.toString()
+    }
+  } catch {
+    // fallback bên dưới
+  }
+
+  const withoutHash = trimmed.split('#')[0]
+  if (withoutHash.includes('/edit')) {
+    const replaced = withoutHash.replace('/edit', '/export')
+    const joiner = replaced.includes('?') ? '&' : '?'
+    return `${replaced}${joiner}format=csv`
+  }
+  return withoutHash
 }
 
 /** Rubric mặc định trong code (+ tùy chọn compact qua VITE_AI_COMPACT_SYSTEM_PROMPT). */
@@ -204,9 +232,7 @@ export function TaskProvider({ children }: { children: ReactNode }) {
       blockedHashtags: string[],
     ) => {
       try {
-        const csvUrl = url.includes('/edit')
-          ? url.replace('/edit', '/export') + '&format=csv'
-          : url
+        const csvUrl = toGoogleCsvUrl(url)
         const response = await fetch(csvUrl)
         if (!response.ok) {
           throw new Error(`Không tải được CSV (${response.status})`)
