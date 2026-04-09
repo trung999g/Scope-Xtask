@@ -5,7 +5,7 @@ import { useTask } from '../../hooks/useTask';
 export const InputPage: React.FC = () => {
   const { fetchTasks, importTasksFromCsvText } = useTask();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [url, setUrl] = useState('https://docs.google.com/spreadsheets/d/13pygqbhoT9tU-bokO28hXwkkRwsAs69oBGFIia-CH_4/edit?gid=2139411832');
+  const [url, setUrl] = useState('');
   const [employeeText, setEmployeeText] = useState(`178701 - Nguyễn An Thới
 165141 - Nguyễn Phương Thuỳ
 182618 - Dương Ngọc Huy
@@ -134,6 +134,7 @@ export const InputPage: React.FC = () => {
                   <input 
                     type="text" 
                     value={url}
+                    placeholder="https://docs.google.com/spreadsheets/d/13pygqbhoT9tU-bokO28hXwkkRwsAs69oBGFIia-CH_4/edit?gid=2139411832"
                     onChange={(e) => setUrl(e.target.value)}
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-slate-400 outline-none transition-all"
                   />
