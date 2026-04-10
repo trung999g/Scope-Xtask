@@ -46,10 +46,22 @@ export const RulesPage: React.FC = () => {
              <h3 className="text-xl font-bold text-slate-800">Phân loại & Độ khó</h3>
           </div>
           <div className="space-y-4">
-             <DifficultyRow level={4} label="Kiến trúc / Sáng tạo mới" points={4} />
-             <DifficultyRow level={3} label="Logic phức tạp / Integration" points={3} />
+             <DifficultyRow level={4} label="Tối ưu / Optimize & kiến trúc / Perf hệ thống / Lib team" points={4} />
+             <DifficultyRow level={3} label="Logic phức tạp / Integration / Review code & PR" points={3} />
              <DifficultyRow level={2} label="Logic cơ bản / State / API" points={2} />
              <DifficultyRow level={1} label="UI đơn giản / CSS / Typo" points={1} />
+             <RuleItem
+               title="Họp triển khai task"
+               description="Phiếu họp/kickoff/handover triển khai (phối hợp, không tính như dev FE nặng): độ khó và điểm chấm trong khung 1–2; hệ thống và rubric AI không tự nâng chỉ vì từ “họp” nếu đúng loại này."
+             />
+             <RuleItem
+               title="Review task"
+               description="Rà soát spec/AC, review code, PR/MR, peer review: thường độ khó 3 và điểm 3 khi phạm vi rõ (nhiều file/PR); phạm vi hẹp có thể 2. Không gán 4 nếu không kèm optimize/kiến trúc. taskType thường maintenance (quy trình) trừ khi gắn deliverable dev rõ."
+             />
+             <RuleItem
+               title="Support task"
+               description="Hỗ trợ BA/QA/user, hỏi đáp kỹ thuật, debug hộ, chỉnh nhỏ theo ticket support: thường độ khó và điểm 1–2; taskType ưu tiên maintenance. Chỉ lên 3–4 khi phiếu mô tả thêm phần dev/tích hợp đáng kể (không còn support thuần)."
+             />
           </div>
         </div>
 

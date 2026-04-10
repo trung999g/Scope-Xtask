@@ -14,6 +14,10 @@ import {
     hasOpenAiEndpoint,
 } from '@/utils/openAiEndpoint'
 import {
+    isDeploymentMeetingTask,
+    taskTextSuggestsReviewWithoutOptimize,
+} from '@/utils/ScoringEngine'
+import {
     auditPayloadId,
     normalizeXtaskId,
 } from '@/utils/taskIds'
@@ -362,6 +366,8 @@ Thiếu mô tả chi tiết, desc rỗng hoặc descIsOnlyTitle (trùng title): 
 
 **Mô tả mơ hồ** (chữ chung chung, không nêu màn/flow/hạng mục rõ): dùng **VAGUE**, chấm thận trọng theo rubric (thường điểm 1–2, difficulty 1–2; tối đa 3 nếu title+link/doc trong phiếu đủ gợi scope; không 4đ / không difficulty 4). **aiComment** phải nhắc mức mơ hồ.
 
+**Review task** (review spec/PR/code…) và **Support task** (hỗ trợ hỏi đáp, chỉnh nhỏ…): chấm **điểm + difficulty + taskType** theo rubric hệ thống — phân tách rõ, không gom nhầm support nhẹ vào mức review/dev nặng; trong **aiComment** ghi nhãn **Review task** hoặc **Support task** khi khớp.
+
 PAYLOAD (lô hiện tại):
 ${JSON.stringify(payload)}`
 }
@@ -444,6 +450,40 @@ function mergeAiOntoTask(task: Task, entry: AiScoreEntry | undefined): Task {
     }
   }
 
+  /** Họp triển khai task: phối hợp — trần difficulty & điểm 2 (rubric; không áp khi FRAUD/USELESS). */
+  let deploymentMeetingCapped = false
+  if (
+    status !== 'FRAUD' &&
+    status !== 'USELESS' &&
+    isDeploymentMeetingTask(titleTrim, descTrim)
+  ) {
+    if (difficulty > 2) {
+      difficulty = 2
+      deploymentMeetingCapped = true
+    }
+    if (rawScore > 2) {
+      rawScore = 2
+      deploymentMeetingCapped = true
+    }
+  }
+
+  /** Review code / PR (không optimize) — trần difficulty & điểm 3. */
+  let reviewOnlyCapped = false
+  if (
+    status !== 'FRAUD' &&
+    status !== 'USELESS' &&
+    taskTextSuggestsReviewWithoutOptimize(titleTrim, descTrim)
+  ) {
+    if (difficulty > 3) {
+      difficulty = 3
+      reviewOnlyCapped = true
+    }
+    if (rawScore > 3) {
+      rawScore = 3
+      reviewOnlyCapped = true
+    }
+  }
+
   const finalScore = applyLatePenalty(rawScore, task.lateDays)
 
   const aiQualityScore =
@@ -467,6 +507,12 @@ function mergeAiOntoTask(task: Task, entry: AiScoreEntry | undefined): Task {
     if (vagueFlooredToOne) parts.push('tối thiểu 1đ theo title')
     if (vagueCapped) parts.push('trần điểm/difficulty theo rubric')
     notes = `${notes ? `${notes} | ` : ''}AI: ${parts.join(' — ')}`.trim()
+  }
+  if (deploymentMeetingCapped) {
+    notes = `${notes ? `${notes} | ` : ''}Rule: họp triển khai — trần difficulty/điểm 2`.trim()
+  }
+  if (reviewOnlyCapped) {
+    notes = `${notes ? `${notes} | ` : ''}Rule: review (không optimize) — trần difficulty/điểm 3`.trim()
   }
 
   return {

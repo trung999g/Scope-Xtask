@@ -1,5 +1,55 @@
 import type { Task, TaskType } from "../types";
 
+/** Họp triển khai / kickoff — phối hợp, không tương đương dev FE nặng; rule: độ khó 1–2. */
+export function isDeploymentMeetingTask(
+  title: string,
+  description: string = "",
+): boolean {
+  const combined = `${title} ${description}`.trim();
+  if (!combined) return false;
+  const lower = combined.toLowerCase();
+  const unaccent = lower
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  return (
+    lower.includes("họp triển khai") ||
+    unaccent.includes("hop trien khai") ||
+    lower.includes("meeting triển khai") ||
+    unaccent.includes("meeting trien khai")
+  );
+}
+
+const REVIEW_CODE_MARKERS = [
+  "review task",
+  "review code",
+  "code review",
+  "rà soát code",
+  "review pr",
+  "merge request",
+  "peer review",
+  "review spec",
+  "review ac",
+] as const;
+
+const OPTIMIZE_MARKERS = [
+  "optimize",
+  "tối ưu code",
+  "tối ưu bundle",
+  "tối ưu hiệu năng",
+] as const;
+
+/** Review / PR có trong phiếu và không có tín hiệu optimize/tối ưu code — rubric: tối đa mức 3. */
+export function taskTextSuggestsReviewWithoutOptimize(
+  title: string,
+  description = "",
+): boolean {
+  const text = `${title} ${description}`.toLowerCase();
+  const hasReview = REVIEW_CODE_MARKERS.some((k) => text.includes(k));
+  if (!hasReview) return false;
+  const hasOptimize = OPTIMIZE_MARKERS.some((k) => text.includes(k));
+  return !hasOptimize;
+}
+
 export const KEYWORDS = {
   LEVEL_1: [
     "ui đơn giản",
@@ -37,14 +87,23 @@ export const KEYWORDS = {
     "integration",
     "hotfix",
     "quan trọng",
-    "họp",
     "quy trình",
+    "review task",
+    "review code",
+    "code review",
+    "rà soát code",
+    "review pr",
+    "merge request",
+    "peer review",
   ],
   LEVEL_4: [
     "kiến trúc",
     "performance",
     "reusable",
     "optimize",
+    "tối ưu code",
+    "tối ưu bundle",
+    "tối ưu hiệu năng",
     "refactor lớn",
     "re-architect",
     "core",
@@ -63,7 +122,11 @@ export const ScoringEngine = {
   guessDifficulty(title: string, description: string = ""): 1 | 2 | 3 | 4 {
     const text = (title + " " + description).toLowerCase();
 
-    // Check from highest to lowest
+    if (isDeploymentMeetingTask(title, description)) {
+      return 2;
+    }
+
+    // Optimize/tối ưu → mức 4; review → mức 3. Xét LEVEL_4 trước để "optimize code" không rơi vào nhánh review.
     if (KEYWORDS.LEVEL_4.some((k) => text.includes(k))) return 4;
     if (KEYWORDS.LEVEL_3.some((k) => text.includes(k))) return 3;
     if (KEYWORDS.LEVEL_2.some((k) => text.includes(k))) return 2;
